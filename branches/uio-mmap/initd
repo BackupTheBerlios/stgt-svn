@@ -42,8 +42,6 @@ stop_server()
 		rmmod ibmvstgt
 	fi
 
-#	rmmod tgt_sd
-	rmmod tgt_vsd
 	rmmod tgt_scsi
 	rmmod tgt_core
 }
