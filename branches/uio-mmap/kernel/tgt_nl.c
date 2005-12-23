@@ -99,6 +99,8 @@ int tgt_uspace_cmd_done_send(struct tgt_cmd *cmd, gfp_t flags)
 	ev.k.cmd_done.typeid = cmd->session->target->typeid;
 	ev.k.cmd_done.uaddr = cmd->uaddr;
 	ev.k.cmd_done.len = cmd->bufflen;
+	if (test_bit(TGT_CMD_MAPPED, &cmd->flags))
+		ev.k.cmd_done.mmapped = 1;
 
 	return send_event_res(TGT_KEVENT_CMD_DONE, &ev, NULL, 0, flags);
 }
@@ -180,7 +182,7 @@ static int event_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 		break;
 	case TGT_UEVENT_CMD_RES:
 		err = uspace_cmd_done(ev->u.cmd_res.tid, ev->u.cmd_res.dev_id,
-				      ev->u.cmd_res.cid, ev->data,
+				      ev->u.cmd_res.cid,
 				      ev->u.cmd_res.result, ev->u.cmd_res.len,
 				      ev->u.cmd_res.offset,
 				      ev->u.cmd_res.uaddr, ev->u.cmd_res.rw,

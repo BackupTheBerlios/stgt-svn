@@ -606,15 +606,6 @@ int tgt_device_destroy(int tid, uint64_t dev_id)
 	}
 }
 
-static void tgt_free_buffer(struct tgt_cmd *cmd)
-{
-	int i;
-
-	for (i = 0; i < cmd->sg_count; i++)
-		__free_page(cmd->sg[i].page);
-	kfree(cmd->sg);
-}
-
 static void tgt_unmap_user_pages(struct tgt_cmd *cmd)
 {
 	struct page *page;
@@ -640,12 +631,9 @@ static void __tgt_cmd_destroy(void *data)
 
 	dprintk("tag %d\n", rq->tag);
 
-	if (test_bit(TGT_CMD_MAPPED, &cmd->flags)) {
-		tgt_unmap_user_pages(cmd);
-		kfree(cmd->sg);
-		tgt_uspace_cmd_done_send(cmd, GFP_KERNEL);
-	} else
-		tgt_free_buffer(cmd);
+	tgt_unmap_user_pages(cmd);
+	kfree(cmd->sg);
+	tgt_uspace_cmd_done_send(cmd, GFP_KERNEL);
 
 	spin_lock_irqsave(q->queue_lock, flags);
 	if (blk_rq_tagged(rq))
@@ -767,46 +755,6 @@ static void tgt_write_data_transfer_done(struct tgt_cmd *cmd)
 	tgt_transfer_response(cmd);
 }
 
-#define pgcnt(size, offset)	((((size) + ((offset) & ~PAGE_CACHE_MASK)) + PAGE_CACHE_SIZE - 1) >> PAGE_CACHE_SHIFT)
-
-/*
- * TODO: this will have to obey at least the target driver's limits,
- * but to support passthrough commands we will need to obey the
- * something like's tgt_sd devices's queue's limits.
- */
-void __tgt_alloc_buffer(struct tgt_cmd *cmd)
-{
-	uint64_t offset = cmd->offset;
-	uint32_t len = cmd->bufflen;
-	int i;
-
-	cmd->sg_count = pgcnt(len, offset);
-	offset &= ~PAGE_CACHE_MASK;
-
-	dprintk("cmd %p tag %d pg_count %d offset %" PRIu64 " len %d\n",
-		cmd, cmd->rq->tag, cmd->sg_count, cmd->offset, cmd->bufflen);
-
-	/*
-	 * TODO: mempool this like in scsi_lib.c
-	 */
-	cmd->sg = kmalloc(cmd->sg_count * sizeof(struct scatterlist),
-			   GFP_KERNEL | __GFP_NOFAIL);
-
-	/*
-	 * TODO need to create reserves
-	 */
-	for (i = 0; i < cmd->sg_count; i++) {
-		struct scatterlist *sg = &cmd->sg[i];
-
-		sg->page = alloc_page(GFP_KERNEL | __GFP_NOFAIL);
-		sg->offset = offset;
-		sg->length = min_t(uint32_t, PAGE_CACHE_SIZE - offset, len);
-
-		offset = 0;
-		len -= sg->length;
-	}
-}
-
 /*
  * we should jsut pass the cmd pointer between userspace and the kernel
  * as a handle like open-iscsi
@@ -847,6 +795,8 @@ static struct tgt_cmd *find_cmd_by_id(int tid, uint64_t dev_id, uint64_t cid)
 	return NULL;
 }
 
+#define pgcnt(size, offset)	((((size) + ((offset) & ~PAGE_CACHE_MASK)) + PAGE_CACHE_SIZE - 1) >> PAGE_CACHE_SHIFT)
+
 static int tgt_map_user_pages(int rw, struct tgt_cmd *cmd)
 {
 	int i, err = -EIO, cnt;
@@ -880,7 +830,6 @@ static int tgt_map_user_pages(int rw, struct tgt_cmd *cmd)
 		goto free_sg;
 	}
 
-	__set_bit(TGT_CMD_MAPPED, &cmd->flags);
 	/*
 	 * We have a request_queue and we have a the SGIO scatterlist stuff in
 	 * scsi-misc so we can use those functions to make us a request with
@@ -919,14 +868,12 @@ release_pages:
 	return err;
 }
 
-int uspace_cmd_done(int tid, uint64_t dev_id, uint64_t cid, void *data,
+int uspace_cmd_done(int tid, uint64_t dev_id, uint64_t cid,
 		    int result, uint32_t len, uint64_t offset,
 		    unsigned long uaddr, uint8_t rw, uint8_t try_map)
 {
 	struct tgt_target *target;
 	struct tgt_cmd *cmd;
-	char *p = data;
-	int i;
 
 	cmd = find_cmd_by_id(tid, dev_id, cid);
 	if (!cmd) {
@@ -941,15 +888,17 @@ int uspace_cmd_done(int tid, uint64_t dev_id, uint64_t cid, void *data,
 	cmd->uaddr = uaddr;
 	cmd->result = result;
 	cmd->offset = offset;
+	if (len)
+		cmd->bufflen = len;
+	if (try_map)
+		set_bit(TGT_CMD_MAPPED, &cmd->flags);
 
 	target = cmd->session->target;
-	target->proto->uspace_cmd_complete(cmd);
+/* 	target->proto->uspace_cmd_complete(cmd); */
 
-	if (try_map && !cmd->result) {
+	if (cmd->bufflen) {
 		if (tgt_map_user_pages(rw, cmd))
 			return -EIO;
-		/* what to do for errors */
-
 		if (cmd->data_dir == DMA_TO_DEVICE) {
 			cmd->done = tgt_write_data_transfer_done;
 			/*
@@ -958,17 +907,6 @@ int uspace_cmd_done(int tid, uint64_t dev_id, uint64_t cid, void *data,
 			 */
 			target->tt->transfer_write_data(cmd);
 			return 0;
-		}
-	} else if (len) {
-		cmd->bufflen = len;
-		__tgt_alloc_buffer(cmd);
-
-		for (i = 0; i < cmd->sg_count; i++) {
-			uint32_t copy = min_t(uint32_t, len, PAGE_CACHE_SIZE);
-
-			memcpy(page_address(cmd->sg[i].page), p, copy);
-			p += copy;
-			len -= copy;
 		}
 	}
 

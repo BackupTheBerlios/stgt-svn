@@ -115,7 +115,7 @@ static int cmd_queue(int fd, char *reqbuf, char *resbuf)
 	uint64_t offset, cid = ev_req->k.cmd_req.cid;
 	uint8_t *scb, rw = 0, try_map = 0;
 	unsigned long uaddr;
-	int (*fn) (int, uint64_t, uint8_t *, uint8_t *, int *, int, uint32_t,
+	int (*fn) (int, uint64_t, uint8_t *, int *, int, uint32_t,
 		   unsigned long *, uint8_t *, uint8_t *, uint64_t *);
 
 	memset(resbuf, 0, NL_BUFSIZE);
@@ -129,7 +129,6 @@ static int cmd_queue(int fd, char *reqbuf, char *resbuf)
 		result = fn(ev_req->k.cmd_req.tid,
 			    ev_req->k.cmd_req.dev_id,
 			    scb,
-			    (uint8_t *) ev_res->data,
 			    &len,
 			    ev_req->k.cmd_req.fd,
 			    ev_req->k.cmd_req.data_len,
@@ -154,7 +153,7 @@ static int cmd_queue(int fd, char *reqbuf, char *resbuf)
 	log_debug("scsi_cmd_process res %d len %d\n", result, len);
 
 	return __nl_write(fd, TGT_UEVENT_CMD_RES, resbuf,
-			  NLMSG_SPACE(sizeof(*ev_res) + len));
+			  NLMSG_SPACE(sizeof(*ev_res)));
 }
 
 static void nl_task_mgmt(struct tgt_event *ev)

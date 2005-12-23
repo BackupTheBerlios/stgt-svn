@@ -111,6 +111,7 @@ struct tgt_event {
 			int typeid;
 			unsigned long uaddr;
 			uint32_t len;
+			int mmapped;
 		} cmd_done;
 	} k;
 
