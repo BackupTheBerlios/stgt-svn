@@ -817,9 +817,6 @@ static int tgt_map_user_pages(int rw, struct tgt_cmd *cmd)
 
 	dprintk("cmd %p addr %lx cnt %d\n", cmd, cmd->uaddr, cnt);
 
-	if (rw == WRITE)
-		__set_bit(TGT_CMD_RW, &cmd->flags);
-
 	down_read(&tgtd_tsk->mm->mmap_sem);
 	err = get_user_pages(tgtd_tsk, tgtd_tsk->mm, cmd->uaddr, cnt,
 			     rw == WRITE, 0, pages, NULL);
@@ -890,8 +887,10 @@ int uspace_cmd_done(int tid, uint64_t dev_id, uint64_t cid,
 	cmd->offset = offset;
 	if (len)
 		cmd->bufflen = len;
+	if (rw == WRITE)
+		__set_bit(TGT_CMD_RW, &cmd->flags);
 	if (try_map)
-		set_bit(TGT_CMD_MAPPED, &cmd->flags);
+		__set_bit(TGT_CMD_MAPPED, &cmd->flags);
 
 	target = cmd->session->target;
 /* 	target->proto->uspace_cmd_complete(cmd); */
