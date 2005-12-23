@@ -23,7 +23,7 @@ start_server()
 		insmod ${PWD}/ibmvstgt/kernel/ibmvstgt.ko
 	fi
 
-	${PWD}/usr/tgtd -d 0
+	${PWD}/usr/tgtd
 }
 	
 stop_server()
