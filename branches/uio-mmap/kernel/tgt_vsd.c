@@ -74,102 +74,17 @@ static void tgt_vsd_prep(struct tgt_cmd *cmd)
 	cmd->offset = off;
 }
 
-/*
- * TODO: We need to redo our scatter lists so they take into account
- * this common usage, but also not violate HW limits
- */
-static struct iovec* sg_to_iovec(struct scatterlist *sg, int sg_count)
-{
-	struct iovec* iov;
-	int i;
-
-	iov = kmalloc(sizeof(struct iovec) * sg_count, GFP_KERNEL);
-	if (!iov)
-		return NULL;
-
-	for (i = 0; i < sg_count; i++) {
-		iov[i].iov_base = page_address(sg[i].page) + sg[i].offset;
-		iov[i].iov_len = sg[i].length;
-	}
-
-	return iov;
-}
-
-/*
- * TODO this will move to a io_handler callout
- */
-static int vsd_execute_file_io(struct tgt_cmd *cmd, int op)
-{
-	struct file *file = cmd->device->file;
-	ssize_t ret;
-	struct iovec *iov;
-	loff_t pos = cmd->offset;
-
-	iov = sg_to_iovec(cmd->sg, cmd->sg_count);
-	if (!iov)
-		return -ENOMEM;
-
-	if (op == READ)
-		ret = generic_file_readv(file, iov, cmd->sg_count, &pos);
-	else
-		ret = generic_file_writev(file, iov, cmd->sg_count, &pos);
-
-	kfree(iov);
-
-	if (ret < 0 || ret != cmd->bufflen) {
-		eprintk("I/O error %d %Zd %u %lld %" PRIu64 "\n",
-			op, ret, cmd->bufflen, pos, cmd->device->size);
-		return -EINVAL;
-	}
-
-	/* sync_page_range(inode, inode->i_mapping, pos, (size_t) cmd->bufflen); */
-	return 0;
-}
-
 static void __tgt_vsd_execute(void *data)
 {
 	struct tgt_cmd *cmd = data;
-	struct scsi_tgt_cmd *scmd = tgt_cmd_to_scsi(cmd);
-	int err, rw;
+	int err;
 
-	switch (scmd->scb[0]) {
-	case READ_6:
-	case READ_10:
-	case READ_16:
-		rw = READ;
-		break;
-	case WRITE_6:
-	case WRITE_10:
-	case WRITE_16:
-	case WRITE_VERIFY:
-		rw = WRITE;
-		break;
-	default:
-		err = tgt_uspace_cmd_send(cmd, GFP_KERNEL);
-		/*
-		 * successfully queued
-		 */
-		if (err >= 0)
-			return;
+	err = tgt_uspace_cmd_send(cmd, GFP_KERNEL);
+	if (err >= 0)
+		return;
 
-		goto failed;
-	};
-
-	err = vsd_execute_file_io(cmd, rw);
-	if (!err) {
-		cmd->result = SAM_STAT_GOOD;
-		goto done;
-	}
-
-	/*
-	 * we should do a switch but I am not sure of all the err values
-	 * returned. If you find one add it
-	 */
-failed:
 	/* TODO if -ENOMEM return QUEUEFULL or BUSY ??? */
 	scsi_tgt_sense_data_build(cmd, HARDWARE_ERROR, 0, 0);
-done:
-	tgt_transfer_response(cmd);
 }
 
 static int tgt_vsd_execute(struct tgt_cmd *cmd)
