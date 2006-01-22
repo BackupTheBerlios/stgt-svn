@@ -28,6 +28,7 @@ struct tgt_event {
 		struct {
 			char type[32];
 			int nr_cmds;
+			int pid;
 		} c_target;
 		struct {
 			int tid;
@@ -39,6 +40,7 @@ struct tgt_event {
 		struct {
 			int tid;
 			uint64_t cid;
+			uint64_t devid;
 			uint32_t len;
 			int result;
 			/*
@@ -71,6 +73,7 @@ struct tgt_event {
 		struct {
 			int tid;
 			int typeid;
+			uint64_t devid;
 			unsigned long uaddr;
 			uint32_t len;
 			int mmapped;

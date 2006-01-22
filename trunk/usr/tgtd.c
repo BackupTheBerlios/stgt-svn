@@ -1,5 +1,5 @@
 /*
- * Core target framework user-space daemon
+ * Target framework user-space main daemon
  *
  * (C) 2005 FUJITA Tomonori <tomof@acm.org>
  * (C) 2005 Mike Christie <michaelc@cs.wisc.edu>
@@ -46,6 +46,26 @@ static struct option const long_options[] =
 
 static char program_name[] = "tgtd";
 
+static int daemon_init(void)
+{
+	pid_t pid;
+
+	pid = fork();
+	if (pid < 0)
+		return -ENOMEM;
+	else if (pid)
+		exit(0);
+
+	setsid();
+	chdir("/");
+	close(0);
+	open("/dev/null", O_RDWR);
+	dup2(0, 1);
+	dup2(0, 2);
+
+	return 0;
+}
+
 static void usage(int status)
 {
 	if (status != 0)
@@ -65,7 +85,7 @@ Target framework daemon.\n\
 static void signal_catch(int signo) {
 }
 
-static void init(int daemon, int debug)
+static void tgtd_init(void)
 {
 	int fd;
 	char path[64];
@@ -92,11 +112,6 @@ static void init(int daemon, int debug)
 	}
 	write(fd, "-17\n", 4);
 	close(fd);
-
-	if (log_init(program_name, DEFAULT_AREA_SIZE, daemon, debug) < 0) {
-		fprintf(stderr, "can not start the logger daemon\n");
-		exit(-1);
-	}
 }
 
 static void event_loop(int nr_dls, struct pollfd *poll_array)
@@ -114,13 +129,13 @@ static void event_loop(int nr_dls, struct pollfd *poll_array)
 		}
 
 		if (poll_array[POLL_NL].revents)
-			nl_event_handle(nl_fd);
+			nl_event_handle(dlinfo, nl_fd);
 
 		if (poll_array[POLL_IPC].revents)
-			ipc_event_handle(ipc_fd);
+			ipc_event_handle(dlinfo, ipc_fd);
 
 		for (i = 0; i < nr_dls; i++) {
-			fn = dl_poll_fn(i);
+			fn = dl_poll_fn(dlinfo, i);
 			if (fn)
 				fn(poll_array + ((i + 1) * POLLS_PER_DRV), POLLS_PER_DRV);
 		}
@@ -144,7 +159,7 @@ static struct pollfd * poll_init(int nr)
 	array[POLL_IPC].events = POLLIN;
 
 	for (i = 0; i < nr; i++) {
-		fn = dl_poll_init_fn(i);
+		fn = dl_poll_init_fn(dlinfo, i);
 		if (fn)
 			fn(array + (i + 1) * POLLS_PER_DRV, POLLS_PER_DRV);
 	}
@@ -156,10 +171,10 @@ int main(int argc, char **argv)
 {
 	int ch, longindex, nr;
 	int is_daemon = 1, is_debug = 1;
-	pid_t pid;
 	struct pollfd *poll_array;
 
-	while ((ch = getopt_long(argc, argv, "fd:vh", long_options, &longindex)) >= 0) {
+	while ((ch = getopt_long(argc, argv, "fd:vh", long_options,
+				 &longindex)) >= 0) {
 		switch (ch) {
 		case 'f':
 			is_daemon = 0;
@@ -179,41 +194,31 @@ int main(int argc, char **argv)
 		}
 	}
 
-	init(is_daemon, is_debug);
+	if (is_daemon && daemon_init())
+		exit(1);
 
-	if (is_daemon) {
-		pid = fork();
-		if (pid < 0)
-			exit(-1);
-		else if (pid)
-			exit(0);
+	tgtd_init();
 
-		chdir("/");
+	if (log_init(program_name, LOG_SPACE_SIZE, is_daemon, is_debug))
+		exit(1);
 
-		close(0);
-		open("/dev/null", O_RDWR);
-		dup2(0, 1);
-		dup2(0, 2);
-		setsid();
-	}
+	if (tgt_device_init())
+		exit(1);
 
-	if (tgt_device_init() < 0)
-		exit(0);
-
-	nl_fd = nl_open();
+	nl_fd = nl_init();
 	if (nl_fd < 0)
-		exit(nl_fd);
+		exit(1);
+	if (nl_start(nl_fd))
+		exit(1);
 
 	ipc_fd = ipc_open();
 	if (ipc_fd < 0)
 		exit(ipc_fd);
 
-	dl_init();
+	dl_init(dlinfo);
 
 	nr = MAX_DL_HANDLES;
 	poll_array = poll_init(nr);
-
-	dl_config_load();
 
 	event_loop(nr, poll_array);
 

@@ -26,8 +26,6 @@
 
 MODULE_LICENSE("GPL");
 
-struct task_struct *tgtd_tsk;
-
 static spinlock_t all_targets_lock;
 static LIST_HEAD(all_targets);
 
@@ -203,6 +201,8 @@ struct tgt_target *tgt_target_create(char *target_type, int queued_cmds)
 	static int i, target_id;
 	struct tgt_target *target;
 	struct target_type_internal *ti;
+
+	dprintk("%s %d\n", target_type, queued_cmds);
 
 	target = kzalloc(sizeof(*target), GFP_KERNEL);
 	if (!target)
@@ -536,7 +536,7 @@ tgt_cmd_create(struct tgt_session *session, void *tgt_priv, uint8_t *cb,
 	cmd->done = tgt_cmd_destroy;
 	atomic_set(&cmd->state, TGT_CMD_CREATED);
 
-	dprintk("%p %p\n", session, cmd);
+	dprintk("%p %p %p\n", session, cmd, tgt_priv);
 
 	err = tgt_cmd_hlist_add(cmd);
 	if (err) {
@@ -573,7 +573,7 @@ static struct tgt_cmd *tgt_cmd_find(int tid, uint64_t tag)
 	struct tgt_target *target;
 	struct tgt_cmd *cmd;
 
-	dprintk("%d %llu\n", tid, (unsigned long long) tag);
+	dprintk("%d %llx\n", tid, (unsigned long long) tag);
 
 	target = target_find(tid);
 	if (!target) {
@@ -615,6 +615,7 @@ static int tgt_map_user_pages(int rw, struct tgt_cmd *cmd)
 	up_read(&tgtd_tsk->mm->mmap_sem);
 
 	if (err < cnt) {
+		eprintk("cannot get user pages %d %d\n", err, cnt);
 		err = -EIO;
 		goto free_sg;
 	}
@@ -657,7 +658,7 @@ release_pages:
 	return err;
 }
 
-int uspace_cmd_done(int tid, uint64_t cid,
+int uspace_cmd_done(int tid, uint64_t cid, uint64_t devid,
 		    int result, uint32_t len, uint64_t offset,
 		    unsigned long uaddr, uint8_t rw, uint8_t try_map)
 {
@@ -666,14 +667,15 @@ int uspace_cmd_done(int tid, uint64_t cid,
 
 	cmd = tgt_cmd_find(tid, cid);
 	if (!cmd) {
-		eprintk("Could not find command %llu\n",
+		eprintk("Could not find command %llx\n",
 			(unsigned long long) cid);
 		return -EINVAL;
 	}
 
-	dprintk("cmd %p tag %llu result %d len %d bufflen %u\n", cmd,
+	dprintk("cmd %p tag %llx result %d len %d bufflen %u\n", cmd,
 		(unsigned long long) cmd_tag(cmd), result, len, cmd->bufflen);
 
+	cmd->devid = devid;
 	cmd->uaddr = uaddr;
 	cmd->result = result;
 	cmd->offset = offset;
@@ -688,8 +690,11 @@ int uspace_cmd_done(int tid, uint64_t cid,
 /* 	target->proto->uspace_cmd_complete(cmd); */
 
 	if (cmd->bufflen) {
-		if (tgt_map_user_pages(rw, cmd))
+		int err = tgt_map_user_pages(rw, cmd);
+		if (err) {
+			eprintk("%p %d\n", cmd, err);
 			return -EIO;
+		}
 		if (cmd->data_dir == DMA_TO_DEVICE) {
 			cmd->done = tgt_write_data_transfer_done;
 			/*

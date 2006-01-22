@@ -24,6 +24,11 @@ start_server()
 	fi
 
 	${PWD}/usr/tgtd
+
+	sleep 1
+
+	${PWD}/usr/tgtadm --driver istgt --op new --tid 0 --params iqn.2001-04.com.example:storage.disk2.amiens.sys1.xyz
+	${PWD}/usr/tgtadm --driver istgt --op new --tid 0 --lun 0 --params Path=/dev/sdb1
 }
 	
 stop_server()

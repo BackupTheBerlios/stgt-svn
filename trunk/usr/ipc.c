@@ -22,6 +22,8 @@
 #include "tgtadm.h"
 #include "dl.h"
 
+extern int target_pfd[1024];
+
 static int ipc_accept(int afd)
 {
 	struct sockaddr addr;
@@ -50,7 +52,7 @@ out:
 	return err;
 }
 
-void ipc_event_handle(int accept_fd)
+void ipc_event_handle(struct driver_info *dinfo, int accept_fd)
 {
 	int fd, err;
 	char sbuf[4096], rbuf[4096];
@@ -99,9 +101,20 @@ void ipc_event_handle(int accept_fd)
 
 	req = NLMSG_DATA(nlh);
 
-	dprintf("%d %d %d\n", req->typeid, err, nlh->nlmsg_len);
+	dprintf("%d %d %d %d\n", req->mode, req->typeid, err, nlh->nlmsg_len);
 
-	fn = dl_ipc_fn(req->typeid);
+	if (req->mode == MODE_DEVICE) {
+		dprintf("%d %d %d %d\n", req->tid, req->typeid, err, nlh->nlmsg_len);
+		write(target_pfd[req->tid], sbuf, NLMSG_ALIGN(nlh->nlmsg_len));
+		nlh = (struct nlmsghdr *) rbuf;
+		nlh->nlmsg_len = NLMSG_LENGTH(0);
+		res = NLMSG_DATA(nlh);
+		res->err = err;
+
+		goto send;
+	}
+
+	fn = dl_ipc_fn(dinfo, req->typeid);
 	if (fn)
 		err = fn((char *) nlh, rbuf);
 	else

@@ -28,7 +28,6 @@
 #include "tgt_sysfs.h"
 
 extern struct qelem targets_list;
-static int typeid;
 
 static int ipc_cmnd_execute(struct nlmsghdr *nlm_send, int len)
 {
@@ -65,14 +64,15 @@ void async_event(char *data)
 
 	switch (msg->k.conn_state_change.state) {
 	case E_CONN_CLOSE:
-		if (!(session = session_find_id(msg->k.conn_state_change.tid,
-						msg->k.conn_state_change.sid))) {
+		session = session_find_id(msg->k.conn_state_change.tid,
+					  msg->k.conn_state_change.sid);
+
+		if (session) {
+			if (!--session->conn_cnt)
+				session_remove(session);
+		} else
 			eprintf("session %#" PRIx64 " not found?",
 				msg->k.conn_state_change.sid);
-		}
-
-		if (!--session->conn_cnt)
-			session_remove(session);
 		break;
 	default:
 		eprintf("%u\n", msg->k.conn_state_change.state);
@@ -203,23 +203,6 @@ static int iscsi_param_set(int tid, uint64_t sid, int type, uint32_t partial,
 			err, errno, tid, sid, type, partial);
 	free(nlh);
 	return err;
-}
-
-static int iscsi_param_partial_set(int tid, uint64_t sid, int type, int key,
-				   uint32_t val)
-{
-	struct iscsi_param *param;
-	struct iscsi_param s_param[session_key_last];
-	struct iscsi_param t_param[target_key_last];
-
-	if (type == key_session)
-		param = s_param;
-	else
-		param = t_param;
-
-	param[key].val = val;
-
-	return iscsi_param_set(tid, sid, type, 1 << key, param);
 }
 
 static int trgt_mgmt_params(int tid, uint64_t sid, char *params)
@@ -411,7 +394,7 @@ static int istgt_target_mgmt(struct tgtadm_req *req, char *params, char *rbuf, i
 
 	switch (req->op) {
 	case OP_NEW:
-		err = istgt_ktarget_create(typeid, params);
+		err = istgt_ktarget_create(req->typeid, params);
 		break;
 	case OP_DELETE:
 		err = istgt_ktarget_destroy(tid);
@@ -483,138 +466,6 @@ int ipc_mgmt(char *sbuf, char *rbuf)
 	res->err = err;
 
 	return err;
-}
-
-/* This is temporary. */
-
-#define CONFIG_FILE	"/etc/ietd.conf"
-#define BUFSIZE	8192
-
-/* this is the orignal Ardis code. */
-static char *target_sep_string(char **pp)
-{
-	char *p = *pp;
-	char *q;
-
-	for (p = *pp; isspace(*p); p++)
-		;
-	for (q = p; *q && !isspace(*q); q++)
-		;
-	if (*q)
-		*q++ = 0;
-	else
-		p = NULL;
-	*pp = q;
-	return p;
-}
-
-static int filter(const struct dirent *dir)
-{
-	return strcmp(dir->d_name, ".") && strcmp(dir->d_name, "..");
-}
-
-static int driver_to_typeid(char *name)
-{
-	int i, nr, err, fd, id = -ENOENT;
-	char *p, path[PATH_MAX], buf[PATH_MAX];
-	struct dirent **namelist;
-
-	nr = scandir(TGT_TYPE_SYSFSDIR, &namelist, filter, alphasort);
-	for (i = 0; i < nr; i++) {
-		snprintf(path, sizeof(path), TGT_TYPE_SYSFSDIR "/%s/name",
-			 namelist[i]->d_name);
-
-		fd = open(path, O_RDONLY);
-		if (fd < 0) {
-			eprintf("%s %d\n", path, errno);
-			continue;
-		}
-
-		err = read(fd, buf, sizeof(buf));
-		close(fd);
-		if (err < 0) {
-			eprintf("%s %d\n", path, err);
-			continue;
-		}
-
-		if (strncmp(name, buf, strlen(name)))
-			continue;
-
-		for (p = namelist[i]->d_name; !isdigit((int) *p); p++)
-			;
-		id = atoi(p);
-		break;
-	}
-
-	for (i = 0; i < nr; i++)
-		free(namelist[i]);
-	free(namelist);
-
-	return id;
-}
-
-void initial_device_create(int tid, int64_t lun, char *params)
-{
-	char *path, *devtype;
-	char d[] = "tgt_vsd";
-
-	path = devtype = NULL;
-	kdevice_create_parser(params, &path, &devtype);
-	kdevice_create(tid, lun, path, devtype ? : d);
-}
-
-void initial_config_load(void)
-{
-	FILE *config;
-	char buf[BUFSIZE];
-	char *p, *q;
-	int idx, tid;
-	uint32_t val;
-
-	typeid = driver_to_typeid(THIS_NAME);
-
-	dprintf("%d\n", typeid);
-
-	if (!(config = fopen(CONFIG_FILE, "r")))
-		return;
-
-	tid = -1;
-	while (fgets(buf, BUFSIZE, config)) {
-		q = buf;
-		p = target_sep_string(&q);
-		if (!p || *p == '#')
-			continue;
-		if (!strcasecmp(p, "Target")) {
-			tid = 0;
-			if (!(p = target_sep_string(&q)))
-				continue;
-			dprintf("creaing target %s\n", p);
-			tid = istgt_ktarget_create(typeid, p);
-		} else if (!strcasecmp(p, "Alias") && tid >= 0) {
-			;
-		} else if (!strcasecmp(p, "MaxSessions") && tid >= 0) {
-			/* target->max_sessions = strtol(q, &q, 0); */
-		} else if (!strcasecmp(p, "Lun") && tid >= 0) {
-			uint64_t lun = strtoull(q, &q, 10);
-			initial_device_create(tid, lun, q);
-		} else if (!((idx = param_index_by_name(p, target_keys)) < 0) && tid >= 0) {
-			val = strtol(q, &q, 0);
-			if (param_check_val(target_keys, idx, &val) < 0)
-				log_warning("%s, %u\n", target_keys[idx].name, val);
-			iscsi_param_partial_set(tid, 0, key_target, idx, val);
-		} else if (!((idx = param_index_by_name(p, session_keys)) < 0) && tid >= 0) {
-			char *str = target_sep_string(&q);
-			if (param_str_to_val(session_keys, idx, str, &val) < 0)
-				continue;
-			if (param_check_val(session_keys, idx, &val) < 0)
-				log_warning("%s, %u\n", session_keys[idx].name, val);
-			iscsi_param_partial_set(tid, 0, key_session, idx, val);
-		}
-	}
-
-	fclose(config);
-
-	return;
 }
 
 struct iscsi_kernel_interface ioctl_ki = {

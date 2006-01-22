@@ -16,7 +16,7 @@
 #include "tgt_priv.h"
 
 static int tgtd_pid;
-static struct sock *nls;
+static struct sock *nls, *nls_cmd;
 
 int tgt_uspace_cmd_send(struct tgt_cmd *cmd, gfp_t gfp_mask)
 {
@@ -25,7 +25,7 @@ int tgt_uspace_cmd_send(struct tgt_cmd *cmd, gfp_t gfp_mask)
 	struct nlmsghdr *nlh;
 	struct tgt_event *ev;
 	char *pdu;
-	int len, proto_pdu_size = proto->uspace_pdu_size;
+	int err, len, proto_pdu_size = proto->uspace_pdu_size;
 
 	len = NLMSG_SPACE(sizeof(*ev) + proto_pdu_size);
 	skb = alloc_skb(NLMSG_SPACE(len), gfp_mask);
@@ -45,12 +45,15 @@ int tgt_uspace_cmd_send(struct tgt_cmd *cmd, gfp_t gfp_mask)
 	ev->k.cmd_req.data_len = cmd->bufflen;
 
 	proto->uspace_pdu_build(cmd, pdu);
+	err = netlink_unicast(nls_cmd, skb, tgtd_pid, 0);
+	if (err < 0)
+		eprintk("%d\n", err);
 
-	return netlink_unicast(nls, skb, tgtd_pid, 0);
+	return err;
 }
 EXPORT_SYMBOL_GPL(tgt_uspace_cmd_send);
 
-static int send_event_res(uint16_t type, struct tgt_event *p,
+static int send_event_res(struct sock *sk, uint16_t type, struct tgt_event *p,
 			  void *data, int dlen, gfp_t flags)
 {
 	struct tgt_event *ev;
@@ -70,7 +73,7 @@ static int send_event_res(uint16_t type, struct tgt_event *p,
 	if (dlen)
 		memcpy(ev->data, data, dlen);
 
-	return netlink_unicast(nls, skb, tgtd_pid, 0);
+	return netlink_unicast(sk, skb, tgtd_pid, 0);
 }
 
 int tgt_msg_send(struct tgt_target *target, void *data, int dlen, gfp_t flags)
@@ -82,24 +85,27 @@ int tgt_msg_send(struct tgt_target *target, void *data, int dlen, gfp_t flags)
 	ev.k.tgt_passthru.typeid = target->typeid;
 	ev.k.tgt_passthru.len = dlen;
 
-	return send_event_res(TGT_KEVENT_TARGET_PASSTHRU,
+	return send_event_res(nls, TGT_KEVENT_TARGET_PASSTHRU,
 			      &ev, data, dlen, flags);
 }
 EXPORT_SYMBOL_GPL(tgt_msg_send);
 
 int tgt_uspace_cmd_done_send(struct tgt_cmd *cmd, gfp_t flags)
 {
+	struct tgt_protocol *proto = cmd->session->target->proto;
 	struct tgt_event ev;
 
 	memset(&ev, 0, sizeof(ev));
 	ev.k.cmd_done.tid = cmd->session->target->tid;
 	ev.k.cmd_done.typeid = cmd->session->target->typeid;
+	ev.k.cmd_done.devid = cmd->devid;
 	ev.k.cmd_done.uaddr = cmd->uaddr;
 	ev.k.cmd_done.len = cmd->bufflen;
 	if (test_bit(TGT_CMD_MAPPED, &cmd->flags))
 		ev.k.cmd_done.mmapped = 1;
 
-	return send_event_res(TGT_KEVENT_CMD_DONE, &ev, NULL, 0, flags);
+	return send_event_res(nls_cmd, TGT_KEVENT_CMD_DONE, &ev,
+			      empty_zero_page, proto->uspace_pdu_size, flags);
 }
 EXPORT_SYMBOL_GPL(tgt_uspace_cmd_done_send);
 
@@ -114,9 +120,13 @@ static int event_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 
 	switch (nlh->nlmsg_type) {
 	case TGT_UEVENT_START:
-		tgtd_pid  = NETLINK_CREDS(skb)->pid;
+		if (tgtd_pid)
+			eprintk("alstart target thread %d\n", NETLINK_CREDS(skb)->pid);
+
+		tgtd_pid = NETLINK_CREDS(skb)->pid;
 		tgtd_tsk = current;
-		eprintk("start target drivers\n");
+		eprintk("start target drivers %d\n", tgtd_pid);
+
 		break;
 	case TGT_UEVENT_TARGET_CREATE:
 		target = tgt_target_create(ev->u.c_target.type,
@@ -148,10 +158,15 @@ static int event_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 	case TGT_UEVENT_CMD_RES:
 		err = uspace_cmd_done(ev->u.cmd_res.tid,
 				      ev->u.cmd_res.cid,
+				      ev->u.cmd_res.devid,
 				      ev->u.cmd_res.result, ev->u.cmd_res.len,
 				      ev->u.cmd_res.offset,
 				      ev->u.cmd_res.uaddr, ev->u.cmd_res.rw,
 				      ev->u.cmd_res.try_map);
+		if (err)
+			eprintk("%llx %d\n",
+				(unsigned long long) ev->u.cmd_res.cid, err);
+
 		break;
 	default:
 		eprintk("unknown type %d\n", nlh->nlmsg_type);
@@ -187,7 +202,7 @@ static int event_recv_skb(struct sk_buff *skb)
 
 			memset(&ev, 0, sizeof(ev));
 			ev.k.event_res.err = err;
-			send_event_res(TGT_KEVENT_RESPONSE, &ev, NULL, 0,
+			send_event_res(nls, TGT_KEVENT_RESPONSE, &ev, NULL, 0,
 				       GFP_KERNEL | __GFP_NOFAIL);
 		}
 		skb_pull(skb, rlen);
@@ -217,6 +232,12 @@ int __init tgt_nl_init(void)
 	nls = netlink_kernel_create(NETLINK_TGT, 1, event_recv, THIS_MODULE);
 	if (!nls)
 		return -ENOMEM;
+
+	nls_cmd = netlink_kernel_create(NETLINK_TGT_CMD, 1, event_recv, THIS_MODULE);
+	if (!nls_cmd) {
+		sock_release(nls->sk_socket);
+		return -ENOMEM;
+	}
 
 	return 0;
 }

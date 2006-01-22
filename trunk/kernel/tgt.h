@@ -74,6 +74,7 @@ struct tgt_cmd {
 	int result;
 
 	unsigned long uaddr;
+	uint64_t devid;
 
 	/*
 	 * target driver private

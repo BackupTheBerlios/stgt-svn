@@ -5,7 +5,7 @@ struct tgt_target;
 
 /* tgt core */
 extern struct tgt_target *target_find(int tid);
-extern int uspace_cmd_done(int tid, uint64_t cid,
+extern int uspace_cmd_done(int tid, uint64_t cid, uint64_t devid,
 			   int result, uint32_t len, uint64_t offset,
 			   unsigned long addr,
 			   uint8_t rw, uint8_t try_map);

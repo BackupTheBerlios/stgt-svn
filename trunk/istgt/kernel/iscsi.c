@@ -153,22 +153,21 @@ static void do_send_data_rsp(struct istgt_cmd *cmnd)
 {
 	struct iscsi_conn *conn = cmnd->conn;
 	struct istgt_cmd *data_cmnd;
-	struct scatterlist *sg = cmnd->tc->sg;
+	struct scatterlist *sg;
 	struct iscsi_cmd *req = cmd_hdr(cmnd);
 	struct iscsi_data_rsp *rsp;
 	uint32_t pdusize, expsize, scsisize, size, offset, sn;
 	LIST_HEAD(send);
 
-	dprintk("%p\n", cmnd);
+	BUG_ON(!cmnd->tc);
+	sg = cmnd->tc->sg;
+	BUG_ON(!sg);
 	pdusize = conn->session->param.max_xmit_data_length;
 	expsize = cmnd_read_size(cmnd);
-	BUG_ON(!cmnd->tc);
+	dprintk("%p %u %u %u\n", cmnd->tc, pdusize, expsize, cmnd->tc->bufflen);
 	size = min(expsize, cmnd->tc->bufflen);
-	dprintk("%u %u\n", expsize, cmnd->tc->bufflen);
 	offset = 0;
 	sn = 0;
-
-	BUG_ON(!sg);
 
 	while (1) {
 		data_cmnd = iscsi_cmnd_create_rsp_cmnd(cmnd, size <= pdusize);
@@ -746,6 +745,13 @@ static int scsi_cmnd_done(struct tgt_cmd *tc)
 	int err;
 	struct istgt_cmd *cmnd = (struct istgt_cmd *) tc->private;
 
+	/*
+	 * Possibly, cmnd->tc is null here because
+	 * tgt_scsi_cmd_create() does not return yet. This would cause
+	 * trouble later. So we need to set it here.
+	 */
+	cmnd->tc = tc;
+
 	INIT_WORK(&cmnd->work, __scsi_cmnd_done, tc);
 	err = schedule_work(&cmnd->work);
 	BUG_ON(!err);
@@ -785,13 +791,6 @@ static void tgt_scsi_cmd_create(struct istgt_cmd *req)
 		break;
 	}
 
-	req->tc = tgt_cmd_create(conn->session->ts, req, req_hdr->cdb,
-				 be32_to_cpu(req_hdr->data_length),
-				 data_dir, req_hdr->lun,
-				 sizeof(req_hdr->lun),
-				 tags);
-	BUG_ON(!req->tc);
-
 	if (data_dir == DMA_TO_DEVICE && be32_to_cpu(req_hdr->data_length)) {
 		switch (req_hdr->cdb[0]) {
 		case WRITE_6:
@@ -804,6 +803,13 @@ static void tgt_scsi_cmd_create(struct istgt_cmd *req)
 			break;
 		}
 	}
+
+	req->tc = tgt_cmd_create(conn->session->ts, req, req_hdr->cdb,
+				 be32_to_cpu(req_hdr->data_length),
+				 data_dir, req_hdr->lun,
+				 sizeof(req_hdr->lun),
+				 tags);
+	BUG_ON(!req->tc);
 }
 
 static void scsi_cmnd_exec(struct istgt_cmd *cmnd)
