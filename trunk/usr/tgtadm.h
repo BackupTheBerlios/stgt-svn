@@ -31,14 +31,17 @@ struct tgtadm_req {
 	int cid;
 	uint64_t lun;
 	int pid;
+
+	unsigned long addr;
 };
 
 struct tgtadm_res {
 	int err;
+	unsigned long addr;
 };
 
-extern int tgt_mgmt(char *sbuf, char *rbuf);
 extern int ktarget_destroy(int tid);
 extern int ktarget_create(int typeid);
+extern int tgt_mgmt(char *sbuf, char *rbuf);
 
 #endif

@@ -224,6 +224,7 @@ static void ipc_ctrl(int fd)
 	struct msghdr msg;
 	struct nlmsghdr *nlh;
 	struct tgtadm_req *req;
+	struct tgtadm_res *res;
 	char rbuf[2048], buf[2048];
 	int err;
 
@@ -248,6 +249,12 @@ static void ipc_ctrl(int fd)
 	dprintf("%d %d %d %d\n", req->mode, req->typeid, err, nlh->nlmsg_len);
 
 	tgt_mgmt(rbuf, buf);
+
+	nlh = (struct nlmsghdr *) buf;
+	res = NLMSG_DATA(nlh);
+	res->addr = req->addr;
+	dprintf("%d %lx\n", nlh->nlmsg_len, res->addr);
+	err = write(fd, nlh, nlh->nlmsg_len);
 }
 
 
@@ -371,7 +378,7 @@ static void cmd_done(struct driver_info *dinfo, char *buf)
 		ev->k.cmd_done.uaddr, ev->k.cmd_done.len, err);
 }
 
-void nl_cmd(struct driver_info *dinfo, int fd)
+static void nl_cmd(struct driver_info *dinfo, int fd)
 {
 	struct nlmsghdr *nlh;
 	struct tgt_event *ev;
@@ -406,6 +413,18 @@ void nl_cmd(struct driver_info *dinfo, int fd)
 
 }
 
+static int bind_nls(int fd)
+{
+	struct sockaddr_nl addr;
+
+	memset(&addr, 0, sizeof(addr));
+	addr.nl_family = AF_NETLINK;
+	addr.nl_pid = getpid();
+	addr.nl_groups = 0;
+
+	return bind(fd, (struct sockaddr *)&addr, sizeof(addr));
+}
+
 static void tthread_event_loop(struct target *target)
 {
 	struct driver_info d[MAX_DL_HANDLES];
@@ -414,8 +433,8 @@ static void tthread_event_loop(struct target *target)
 
 	fd = nl_init();
 	dprintf("%d\n", fd);
-	err = nl_start(fd);
-	dprintf("%d %d\n", fd, err);
+	err = bind_nls(fd);
+	dprintf("%d\n", err);
 
 	target->pfd[POLL_NL_CMD].fd = fd;
 	target->pfd[POLL_NL_CMD].events = POLLIN;

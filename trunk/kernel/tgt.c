@@ -26,6 +26,8 @@
 
 MODULE_LICENSE("GPL");
 
+struct task_struct *tgtd_tsk;
+
 static spinlock_t all_targets_lock;
 static LIST_HEAD(all_targets);
 
@@ -195,19 +197,22 @@ found:
 	return target;
 }
 
-struct tgt_target *tgt_target_create(char *target_type, int queued_cmds)
+struct tgt_target *tgt_target_create(char *target_type, int queued_cmds, int pid)
 {
 	char name[16];
 	static int i, target_id;
 	struct tgt_target *target;
 	struct target_type_internal *ti;
 
-	dprintk("%s %d\n", target_type, queued_cmds);
+	dprintk("%s %d %d\n", target_type, queued_cmds, pid);
 
 	target = kzalloc(sizeof(*target), GFP_KERNEL);
 	if (!target)
 		return NULL;
 
+	target->tsk = find_task_by_pid(pid);
+	if (!target->tsk)
+		goto free_target;
 	ti = target_template_get(target_type);
 	if (!ti)
 		goto free_target;
@@ -595,6 +600,7 @@ static int tgt_map_user_pages(int rw, struct tgt_cmd *cmd)
 	struct page *page, **pages;
 	uint64_t poffset = cmd->offset & ~PAGE_MASK;
 	uint32_t size, rest = cmd->bufflen;
+	struct task_struct *tsk = cmd->session->target->tsk;
 
 	cnt = pgcnt(cmd->bufflen, cmd->offset);
 	pages = kzalloc(cnt * sizeof(struct page *), GFP_KERNEL);
@@ -609,10 +615,10 @@ static int tgt_map_user_pages(int rw, struct tgt_cmd *cmd)
 
 	dprintk("cmd %p addr %lx cnt %d\n", cmd, cmd->uaddr, cnt);
 
-	down_read(&tgtd_tsk->mm->mmap_sem);
-	err = get_user_pages(tgtd_tsk, tgtd_tsk->mm, cmd->uaddr, cnt,
+	down_read(&tsk->mm->mmap_sem);
+	err = get_user_pages(tsk, tsk->mm, cmd->uaddr, cnt,
 			     rw == WRITE, 0, pages, NULL);
-	up_read(&tgtd_tsk->mm->mmap_sem);
+	up_read(&tsk->mm->mmap_sem);
 
 	if (err < cnt) {
 		eprintk("cannot get user pages %d %d\n", err, cnt);

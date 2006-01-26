@@ -409,21 +409,6 @@ static int istgt_target_mgmt(struct tgtadm_req *req, char *params, char *rbuf, i
 	return err;
 }
 
-static int user_mgmt(struct tgtadm_req *req, char *params, char *rbuf, int *rlen)
-{
-	return 0;
-}
-
-static int conn_mgmt(struct tgtadm_req *req, char *params, char *rbuf, int *rlen)
-{
-	return 0;
-}
-
-static int session_mgmt(struct tgtadm_req *req, char *params, char *rbuf, int *rlen)
-{
-	return 0;
-}
-
 int ipc_mgmt(char *sbuf, char *rbuf)
 {
 	struct nlmsghdr *nlh = (struct nlmsghdr *) sbuf;
@@ -439,21 +424,13 @@ int ipc_mgmt(char *sbuf, char *rbuf)
 		req->typeid, req->mode, req->op, req->tid, req->sid, req->lun, params);
 
 	switch (req->mode) {
-	case MODE_DEVICE:
-	case MODE_SYSTEM:
-		err = tgt_mgmt(sbuf, rbuf);
-		break;
 	case MODE_TARGET:
 		err = istgt_target_mgmt(req, params, rbuf, &rlen);
 		break;
 	case MODE_SESSION:
-		err = session_mgmt(req, params, rbuf, &rlen);
-		break;
 	case MODE_CONNECTION:
-		err = conn_mgmt(req, params, rbuf, &rlen);
-		break;
 	case MODE_USER:
-		err = user_mgmt(req, params, rbuf, &rlen);
+		err = 0;
 		break;
 	default:
 		eprintf("Unknown mode %d\n", req->mode);

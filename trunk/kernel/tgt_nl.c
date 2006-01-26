@@ -16,7 +16,8 @@
 #include "tgt_priv.h"
 
 static int tgtd_pid;
-static struct sock *nls, *nls_cmd;
+static struct sock *nls;
+static void *zero_page;
 
 int tgt_uspace_cmd_send(struct tgt_cmd *cmd, gfp_t gfp_mask)
 {
@@ -24,6 +25,7 @@ int tgt_uspace_cmd_send(struct tgt_cmd *cmd, gfp_t gfp_mask)
 	struct sk_buff *skb;
 	struct nlmsghdr *nlh;
 	struct tgt_event *ev;
+	pid_t pid = cmd->session->target->tsk->pid;
 	char *pdu;
 	int err, len, proto_pdu_size = proto->uspace_pdu_size;
 
@@ -33,7 +35,7 @@ int tgt_uspace_cmd_send(struct tgt_cmd *cmd, gfp_t gfp_mask)
 		return -ENOMEM;
 
 	dprintk("%p %d %Zd %d\n", cmd, len, sizeof(*ev), proto_pdu_size);
-	nlh = __nlmsg_put(skb, tgtd_pid, 0, TGT_KEVENT_CMD_REQ,
+	nlh = __nlmsg_put(skb, pid, 0, TGT_KEVENT_CMD_REQ,
 			  len - sizeof(*nlh), 0);
 	ev = NLMSG_DATA(nlh);
 	memset(ev, 0, sizeof(*ev));
@@ -45,16 +47,17 @@ int tgt_uspace_cmd_send(struct tgt_cmd *cmd, gfp_t gfp_mask)
 	ev->k.cmd_req.data_len = cmd->bufflen;
 
 	proto->uspace_pdu_build(cmd, pdu);
-	err = netlink_unicast(nls_cmd, skb, tgtd_pid, 0);
-	if (err < 0)
-		eprintk("%d\n", err);
-
+	err = netlink_unicast(nls, skb, pid, 0);
+	if (err < 0) {
+		eprintk("%d %d\n", pid, err);
+		BUG();
+	}
 	return err;
 }
 EXPORT_SYMBOL_GPL(tgt_uspace_cmd_send);
 
-static int send_event_res(struct sock *sk, uint16_t type, struct tgt_event *p,
-			  void *data, int dlen, gfp_t flags)
+static int send_event_res(uint16_t type, struct tgt_event *p,
+			  void *data, int dlen, gfp_t flags, uint32_t pid)
 {
 	struct tgt_event *ev;
 	struct nlmsghdr *nlh;
@@ -66,14 +69,14 @@ static int send_event_res(struct sock *sk, uint16_t type, struct tgt_event *p,
 	if (!skb)
 		return -ENOMEM;
 
-	nlh = __nlmsg_put(skb, tgtd_pid, 0, type, len - sizeof(*nlh), 0);
+	nlh = __nlmsg_put(skb, pid, 0, type, len - sizeof(*nlh), 0);
 
 	ev = NLMSG_DATA(nlh);
 	memcpy(ev, p, sizeof(*ev));
 	if (dlen)
 		memcpy(ev->data, data, dlen);
 
-	return netlink_unicast(sk, skb, tgtd_pid, 0);
+	return netlink_unicast(nls, skb, pid, 0);
 }
 
 int tgt_msg_send(struct tgt_target *target, void *data, int dlen, gfp_t flags)
@@ -85,8 +88,8 @@ int tgt_msg_send(struct tgt_target *target, void *data, int dlen, gfp_t flags)
 	ev.k.tgt_passthru.typeid = target->typeid;
 	ev.k.tgt_passthru.len = dlen;
 
-	return send_event_res(nls, TGT_KEVENT_TARGET_PASSTHRU,
-			      &ev, data, dlen, flags);
+	return send_event_res(TGT_KEVENT_TARGET_PASSTHRU,
+			      &ev, data, dlen, flags, tgtd_pid);
 }
 EXPORT_SYMBOL_GPL(tgt_msg_send);
 
@@ -94,6 +97,7 @@ int tgt_uspace_cmd_done_send(struct tgt_cmd *cmd, gfp_t flags)
 {
 	struct tgt_protocol *proto = cmd->session->target->proto;
 	struct tgt_event ev;
+	pid_t pid = cmd->session->target->tsk->pid;
 
 	memset(&ev, 0, sizeof(ev));
 	ev.k.cmd_done.tid = cmd->session->target->tid;
@@ -104,8 +108,9 @@ int tgt_uspace_cmd_done_send(struct tgt_cmd *cmd, gfp_t flags)
 	if (test_bit(TGT_CMD_MAPPED, &cmd->flags))
 		ev.k.cmd_done.mmapped = 1;
 
-	return send_event_res(nls_cmd, TGT_KEVENT_CMD_DONE, &ev,
-			      empty_zero_page, proto->uspace_pdu_size, flags);
+	return send_event_res(TGT_KEVENT_CMD_DONE, &ev,
+			      zero_page,
+			      proto->uspace_pdu_size, flags, pid);
 }
 EXPORT_SYMBOL_GPL(tgt_uspace_cmd_done_send);
 
@@ -120,20 +125,23 @@ static int event_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 
 	switch (nlh->nlmsg_type) {
 	case TGT_UEVENT_START:
-		if (tgtd_pid)
-			eprintk("alstart target thread %d\n", NETLINK_CREDS(skb)->pid);
-
-		tgtd_pid = NETLINK_CREDS(skb)->pid;
-		tgtd_tsk = current;
-		eprintk("start target drivers %d\n", tgtd_pid);
+		if (!tgtd_pid) {
+			tgtd_pid = NETLINK_CREDS(skb)->pid;
+			eprintk("target core start %d\n", tgtd_pid);
+		} else
+			eprintk("target core already started %d\n",
+				NETLINK_CREDS(skb)->pid);
 
 		break;
 	case TGT_UEVENT_TARGET_CREATE:
 		target = tgt_target_create(ev->u.c_target.type,
-					   ev->u.c_target.nr_cmds);
-		if (target)
+					   ev->u.c_target.nr_cmds,
+					   ev->u.c_target.pid);
+		if (target) {
 			err = target->tid;
-		else
+			dprintk("%d %d %d\n", target->tid,
+				target->tsk->pid, err);
+		} else
 			err = -EINVAL;
 		break;
 	case TGT_UEVENT_TARGET_DESTROY:
@@ -163,9 +171,11 @@ static int event_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 				      ev->u.cmd_res.offset,
 				      ev->u.cmd_res.uaddr, ev->u.cmd_res.rw,
 				      ev->u.cmd_res.try_map);
-		if (err)
+		if (err) {
 			eprintk("%llx %d\n",
 				(unsigned long long) ev->u.cmd_res.cid, err);
+			BUG();
+		}
 
 		break;
 	default:
@@ -202,8 +212,9 @@ static int event_recv_skb(struct sk_buff *skb)
 
 			memset(&ev, 0, sizeof(ev));
 			ev.k.event_res.err = err;
-			send_event_res(nls, TGT_KEVENT_RESPONSE, &ev, NULL, 0,
-				       GFP_KERNEL | __GFP_NOFAIL);
+			send_event_res(TGT_KEVENT_RESPONSE, &ev, NULL, 0,
+				       GFP_KERNEL | __GFP_NOFAIL,
+				       nlh->nlmsg_pid);
 		}
 		skb_pull(skb, rlen);
 	}
@@ -224,18 +235,20 @@ static void event_recv(struct sock *sk, int length)
 
 void __exit tgt_nl_exit(void)
 {
+	free_page((unsigned long) zero_page);
 	sock_release(nls->sk_socket);
 }
 
 int __init tgt_nl_init(void)
 {
-	nls = netlink_kernel_create(NETLINK_TGT, 1, event_recv, THIS_MODULE);
-	if (!nls)
+	zero_page = (void *) get_zeroed_page(GFP_KERNEL);
+	if (!zero_page)
 		return -ENOMEM;
 
-	nls_cmd = netlink_kernel_create(NETLINK_TGT_CMD, 1, event_recv, THIS_MODULE);
-	if (!nls_cmd) {
-		sock_release(nls->sk_socket);
+	nls = netlink_kernel_create(NETLINK_TGT, 1, event_recv, THIS_MODULE);
+	if (!nls) {
+		eprintk("Cannot create netlink socket %d\n", NETLINK_TGT);
+		free_page((unsigned long) zero_page);
 		return -ENOMEM;
 	}
 

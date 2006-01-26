@@ -26,9 +26,8 @@
 #include "tgtd.h"
 #include "dl.h"
 
-#define	POLLS_PER_DRV	32
-
 int nl_fd, ipc_fd;
+struct pollfd *poll_array;
 
 enum {
 	POLL_NL,
@@ -114,9 +113,11 @@ static void tgtd_init(void)
 	close(fd);
 }
 
+/* TODO: rewrite makeshift poll code */
+
 static void event_loop(int nr_dls, struct pollfd *poll_array)
 {
-	int err, i, poll_max = (nr_dls + 1) * POLLS_PER_DRV;
+	int err, i, poll_max = (nr_dls + 2) * POLLS_PER_DRV;
 	void (* fn)(struct pollfd *, int);
 
 	while (1) {
@@ -128,16 +129,29 @@ static void event_loop(int nr_dls, struct pollfd *poll_array)
 			continue;
 		}
 
-		if (poll_array[POLL_NL].revents)
+		if (poll_array[POLL_NL].revents) {
 			nl_event_handle(dlinfo, nl_fd);
+			err--;
+		}
 
-		if (poll_array[POLL_IPC].revents)
+		if (poll_array[POLL_IPC].revents) {
 			ipc_event_handle(dlinfo, ipc_fd);
+			err--;
+		}
+
+		if (!err)
+			continue;
+
+		for (i = POLLS_PER_DRV; i < POLLS_PER_DRV * 2; i++)
+			if (poll_array[i].revents) {
+				dprintf("target process event %d\n", i);
+				pipe_event_handle(poll_array[i].fd);
+			}
 
 		for (i = 0; i < nr_dls; i++) {
 			fn = dl_poll_fn(dlinfo, i);
 			if (fn)
-				fn(poll_array + ((i + 1) * POLLS_PER_DRV), POLLS_PER_DRV);
+				fn(poll_array + ((i + 2) * POLLS_PER_DRV), POLLS_PER_DRV);
 		}
 	}
 }
@@ -148,8 +162,7 @@ static struct pollfd * poll_init(int nr)
 	void (* fn)(struct pollfd *, int);
 	int i;
 
-	array = calloc((nr + 1) * POLLS_PER_DRV,
-		       sizeof(struct pollfd));
+	array = calloc((nr + 2) * POLLS_PER_DRV, sizeof(struct pollfd));
 	if (!array)
 		exit(-ENOMEM);
 
@@ -161,7 +174,7 @@ static struct pollfd * poll_init(int nr)
 	for (i = 0; i < nr; i++) {
 		fn = dl_poll_init_fn(dlinfo, i);
 		if (fn)
-			fn(array + (i + 1) * POLLS_PER_DRV, POLLS_PER_DRV);
+			fn(array + (i + 2) * POLLS_PER_DRV, POLLS_PER_DRV);
 	}
 
 	return array;
@@ -171,7 +184,6 @@ int main(int argc, char **argv)
 {
 	int ch, longindex, nr;
 	int is_daemon = 1, is_debug = 1;
-	struct pollfd *poll_array;
 
 	while ((ch = getopt_long(argc, argv, "fd:vh", long_options,
 				 &longindex)) >= 0) {

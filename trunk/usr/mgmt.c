@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -30,8 +31,6 @@
 #ifndef O_LARGEFILE
 #define O_LARGEFILE	0100000
 #endif
-
-int target_pfd[1024];
 
 static void nlmsg_init(struct nlmsghdr *nlh, uint32_t seq,
 		       uint16_t type, uint32_t len, uint16_t flags)
@@ -89,7 +88,14 @@ int ktarget_create(int typeid)
 				__ktarget_create);
 	if (err >= 0) {
 		dprintf("%d %d\n", err, fd);
-		target_pfd[err] = fd;
+
+		/* FIXME */
+		if (err > POLLS_PER_DRV)
+			eprintf("too large tid %d\n", err);
+		else {
+			poll_array[POLLS_PER_DRV + err].fd = fd;
+			poll_array[POLLS_PER_DRV + err].events = POLLIN;
+		}
 	}
 
 	return err;
@@ -252,7 +258,7 @@ int tgt_mgmt(char *sbuf, char *rbuf)
 	}
 
 	nlh = (struct nlmsghdr *) rbuf;
-	nlh->nlmsg_len = NLMSG_LENGTH(rlen);
+	nlh->nlmsg_len = NLMSG_LENGTH(sizeof(*res) + rlen);
 	res = NLMSG_DATA(nlh);
 	res->err = err;
 

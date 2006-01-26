@@ -41,6 +41,8 @@ stop_server()
 
 	killall -9 tgtd
 
+	sleep 1
+
 	if [ $TARGET = "istgt" ] ; then
 		rmmod istgt
 	else
