@@ -1,0 +1,41 @@
+diff --git a/include/net/af_packet.h b/include/net/af_packet.h
+new file mode 100644
+index 0000000..e280e7c
+--- /dev/null
++++ b/include/net/af_packet.h
+@@ -0,0 +1,6 @@
++#ifndef __LINUX_NET_AFPACKET_H
++#define __LINUX_NET_AFPACKET_H
++
++extern void *packet_frame(struct sock *sk);
++
++#endif
+diff --git a/net/packet/af_packet.c b/net/packet/af_packet.c
+index 9db7dbd..aee86cd 100644
+--- a/net/packet/af_packet.c
++++ b/net/packet/af_packet.c
+@@ -562,6 +562,24 @@ drop:
+ }
+ 
+ #ifdef CONFIG_PACKET_MMAP
++void *packet_frame(struct sock *sk)
++{
++	struct packet_sock *po;
++	struct tpacket_hdr *h;
++	int err;
++
++	po = pkt_sk(sk);
++	spin_lock(&sk->sk_receive_queue.lock);
++	h = (struct tpacket_hdr *) packet_lookup_frame(po, po->head);
++	if (h->tp_status)
++		h = ERR_PTR(-ENOBUFS);
++	else
++		po->head = po->head != po->frame_max ? po->head+1 : 0;
++	spin_unlock(&sk->sk_receive_queue.lock);
++	return h;
++}
++EXPORT_SYMBOL_GPL(packet_frame);
++
+ static int tpacket_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt, struct net_device *orig_dev)
+ {
+ 	struct sock *sk;
