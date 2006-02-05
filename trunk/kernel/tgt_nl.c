@@ -56,27 +56,6 @@ int tgt_msg_send(struct tgt_target *target, void *data, int dlen, gfp_t flags)
 }
 EXPORT_SYMBOL_GPL(tgt_msg_send);
 
-int tgt_uspace_cmd_done_send(struct tgt_cmd *cmd, gfp_t flags)
-{
-	struct tgt_protocol *proto = cmd->session->target->proto;
-	struct tgt_event ev;
-	pid_t pid = cmd->session->target->tsk->pid;
-
-	memset(&ev, 0, sizeof(ev));
-	ev.k.cmd_done.tid = cmd->session->target->tid;
-	ev.k.cmd_done.typeid = cmd->session->target->typeid;
-	ev.k.cmd_done.devid = cmd->devid;
-	ev.k.cmd_done.uaddr = cmd->uaddr;
-	ev.k.cmd_done.len = cmd->bufflen;
-	if (test_bit(TGT_CMD_MAPPED, &cmd->flags))
-		ev.k.cmd_done.mmapped = 1;
-
-	return send_event_res(TGT_KEVENT_CMD_DONE, &ev,
-			      zero_page,
-			      proto->uspace_pdu_size, flags, pid);
-}
-EXPORT_SYMBOL_GPL(tgt_uspace_cmd_done_send);
-
 static int event_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 {
 	int err = 0;

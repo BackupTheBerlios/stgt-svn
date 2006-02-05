@@ -439,7 +439,7 @@ static int bind_nls(int fd)
 static void packet_cmd(struct driver_info *dinfo, int fd)
 {
 	struct tpacket_hdr *h;
-
+	struct tgt_event *ev;
 retry:
 	h = (struct tpacket_hdr *) (target->ringbuf + target->idx * target->frame_size);
 
@@ -447,7 +447,19 @@ retry:
 	if (!(h->tp_status & TP_STATUS_USER))
 		return;
 
-	cmd_queue(dinfo, fd, (char *) h + TPACKET_HDRLEN);
+	ev = (struct tgt_event *) ((char *) h + TPACKET_HDRLEN);
+	switch (ev->type) {
+	case TGT_KEVENT_CMD_REQ:
+		cmd_queue(dinfo, fd, (char *) ev);
+		break;
+	case TGT_KEVENT_CMD_DONE:
+		cmd_done(dinfo, (char *) ev);
+		break;
+	default:
+		eprintf("unknown event %u\n", ev->type);
+		exit(1);
+	}
+
 	target->idx = target->idx == target->frame_nr - 1 ? 0: target->idx + 1;
 	h->tp_status &= ~TP_STATUS_USER;
 

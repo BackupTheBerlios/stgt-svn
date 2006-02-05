@@ -23,6 +23,7 @@ enum tgt_event_type {
 };
 
 struct tgt_event {
+	int type;
 	/* user-> kernel */
 	union {
 		struct {
