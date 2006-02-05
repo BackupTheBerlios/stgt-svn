@@ -18,8 +18,8 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <linux/types.h>
 #include <linux/netlink.h>
+#include <linux/types.h>
 
 #include <tgt_if.h>
 #include "tgtd.h"
@@ -75,25 +75,27 @@ static void __ktarget_create(struct tgt_event *ev, struct tgtadm_req *req)
 {
 	sprintf(ev->u.c_target.type, "%s", typeid_to_name(dlinfo, req->typeid));
 	ev->u.c_target.pid = req->pid;
+	ev->u.c_target.fd = req->fd;
 }
 
 int ktarget_create(int typeid)
 {
 	struct tgtadm_req req;
-	int fd, err;
+	int fd[2], err;
 
 	req.typeid = typeid;
-	req.pid = target_thread_create(&fd);
+	req.pid = target_thread_create(fd);
+	req.fd = fd[1];
 	err = tgt_event_execute(&req, TGT_UEVENT_TARGET_CREATE,
 				__ktarget_create);
 	if (err >= 0) {
-		dprintf("%d %d\n", err, fd);
+		dprintf("%d %d\n", err, fd[0]);
 
 		/* FIXME */
 		if (err > POLLS_PER_DRV)
 			eprintf("too large tid %d\n", err);
 		else {
-			poll_array[POLLS_PER_DRV + err].fd = fd;
+			poll_array[POLLS_PER_DRV + err].fd = fd[0];
 			poll_array[POLLS_PER_DRV + err].events = POLLIN;
 		}
 	}

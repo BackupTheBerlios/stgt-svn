@@ -15,6 +15,7 @@
 #include <linux/blkdev.h>
 #include <linux/file.h>
 #include <linux/hash.h>
+#include <linux/net.h>
 #include <asm/scatterlist.h>
 
 #include <tgt.h>
@@ -197,18 +198,25 @@ found:
 	return target;
 }
 
-struct tgt_target *tgt_target_create(char *target_type, int queued_cmds, int pid)
+struct tgt_target *tgt_target_create(char *target_type, int queued_cmds, int pid, int fd)
 {
 	char name[16];
-	static int i, target_id;
+	static int target_id;
+	static int i, err;
 	struct tgt_target *target;
 	struct target_type_internal *ti;
+	struct socket *sock;
 
-	dprintk("%s %d %d\n", target_type, queued_cmds, pid);
+	dprintk("%s %d %d %d\n", target_type, queued_cmds, pid, fd);
 
 	target = kzalloc(sizeof(*target), GFP_KERNEL);
 	if (!target)
 		return NULL;
+
+	sock = sockfd_lookup(fd, &err);
+	eprintk("%d\n", err);
+	target->sock = sock;
+	fget(fd);
 
 	target->tsk = find_task_by_pid(pid);
 	if (!target->tsk)
@@ -275,6 +283,9 @@ int tgt_target_destroy(struct tgt_target *target)
 	unsigned long flags;
 
 	dprintk("%p\n", target);
+
+	if (target->sock)
+		fput(target->sock->file);
 
 	spin_lock_irqsave(&target->lock, flags);
 	/* userspace and maybe a hotunplug are racing (TODO refcounts) */

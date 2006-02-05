@@ -14,15 +14,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <netinet/in.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/user.h>
 #include <linux/fs.h>
+#include <linux/if_ether.h>
+#include <linux/if_packet.h>
 #include <linux/netlink.h>
 
 #include <tgt_if.h>
+#include <tgt_scsi_if.h>
 #include "tgtd.h"
 #include "tgtadm.h"
 #include "dl.h"
@@ -34,6 +39,7 @@
 enum {
 	POLL_IPC_CTRL,
 	POLL_NL_CMD,
+	POLL_PACKET,
 };
 
 struct device {
@@ -46,10 +52,15 @@ struct device {
 };
 
 struct target {
-	struct pollfd pfd[2];
+	struct pollfd pfd[3];
 
 	struct device **devt;
 	uint64_t max_device;
+
+	char *ringbuf;
+	uint32_t frame_size;
+	uint32_t frame_nr;
+	uint32_t idx;
 };
 
 static struct target *target;
@@ -296,7 +307,7 @@ static int cmd_queue(struct driver_info *dinfo, int fd, char *reqbuf)
 
 	memset(resbuf, 0, sizeof(resbuf));
 	pdu = (uint8_t *) ev_req->data;
-	dprintf("%" PRIu64 " %x\n", cid, pdu[0]);
+	dprintf("%d %" PRIu64 " %x\n", tid, cid, pdu[0]);
 
 	if (!get_devid)
 		get_devid = dl_proto_get_devid(dinfo, tid, typeid);
@@ -425,12 +436,64 @@ static int bind_nls(int fd)
 	return bind(fd, (struct sockaddr *)&addr, sizeof(addr));
 }
 
-static void tthread_event_loop(struct target *target)
+static void packet_cmd(struct driver_info *dinfo, int fd)
+{
+	struct tpacket_hdr *h;
+
+retry:
+	h = (struct tpacket_hdr *) (target->ringbuf + target->idx * target->frame_size);
+
+	dprintf("%lx %u\n", h->tp_status, target->idx);
+	if (!(h->tp_status & TP_STATUS_USER))
+		return;
+
+	cmd_queue(dinfo, fd, (char *) h + TPACKET_HDRLEN);
+	target->idx = target->idx == target->frame_nr - 1 ? 0: target->idx + 1;
+	h->tp_status &= ~TP_STATUS_USER;
+
+	goto retry;
+}
+
+static void *ringbuf_init(int fd)
+{
+	struct tpacket_req req;
+	int err;
+	socklen_t len = sizeof(req);
+	unsigned int size = PAGE_SIZE * 8;
+	void *ptr;
+
+	req.tp_frame_size = TPACKET_ALIGN(TPACKET_HDRLEN +
+					  sizeof(struct tgt_event) +
+					  sizeof(struct tgt_scsi_cmd));
+	req.tp_block_size = size;
+	req.tp_frame_nr = req.tp_block_size / req.tp_frame_size;
+	req.tp_block_nr = 1;
+
+	err = setsockopt(fd, SOL_PACKET, PACKET_RX_RING, &req, len);
+	dprintf("%d %u %u\n", err, req.tp_frame_size, req.tp_frame_nr);
+	if (err < 0)
+		return NULL;
+
+	ptr = mmap(0, size, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
+	if (ptr == MAP_FAILED) {
+		eprintf("fail to mmap\n");
+		ptr = NULL;
+	}
+
+	target->frame_size = req.tp_frame_size;
+	target->frame_nr = req.tp_frame_nr;
+
+	return ptr;
+}
+
+static void tthread_event_loop(struct target *target, int packetfd)
 {
 	struct driver_info d[MAX_DL_HANDLES];
 	struct pollfd *pfd = target->pfd;
 	int fd, err;
 
+	target->ringbuf = ringbuf_init(packetfd);
+	dprintf("%p %d\n", target->ringbuf, packetfd);
 	fd = nl_init();
 	dprintf("%d\n", fd);
 	err = bind_nls(fd);
@@ -439,13 +502,16 @@ static void tthread_event_loop(struct target *target)
 	target->pfd[POLL_NL_CMD].fd = fd;
 	target->pfd[POLL_NL_CMD].events = POLLIN;
 
+	target->pfd[POLL_PACKET].fd = packetfd;
+	target->pfd[POLL_PACKET].events = POLLIN;
+
 	err = dl_init(d);
 	dprintf("%d\n", err);
 
 	dprintf("Target thread started %u %d\n", getpid(), fd);
 
 	while (1) {
-		err = poll(pfd, 2, -1);
+		err = poll(pfd, 3, -1);
 		dprintf("target thread event %d\n", err);
 
 		if (err < 0) {
@@ -460,6 +526,9 @@ static void tthread_event_loop(struct target *target)
 
 		if (pfd[POLL_NL_CMD].revents)
 			nl_cmd(d, pfd[POLL_NL_CMD].fd);
+
+		if (pfd[POLL_PACKET].revents)
+			packet_cmd(d, pfd[POLL_NL_CMD].fd);
 	}
 
 	free(target);
@@ -467,7 +536,7 @@ static void tthread_event_loop(struct target *target)
 
 int target_thread_create(int *sfd)
 {
-	pid_t pid;
+	pid_t pid, pfd;
 	int fd[2];
 
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, fd) < 0) {
@@ -475,11 +544,17 @@ int target_thread_create(int *sfd)
 		return -1;
 	}
 
+	pfd = socket(PF_PACKET, SOCK_RAW, 0);
+	dprintf("%d\n", pfd);
+
 	pid = fork();
 	if (pid < 0)
 		return -ENOMEM;
 	else if (pid) {
-		*sfd = fd[0];
+		sfd[0] = fd[0];
+		sfd[1] = pfd;
+
+/* 		close(pfd); */
 		close(fd[1]);
 		return pid;
 	}
@@ -489,6 +564,7 @@ int target_thread_create(int *sfd)
 		eprintf("Out of memoryn\n");
 		exit(1);
 	}
+	memset(target, 0, sizeof(*target));
 
 	target->devt = calloc(DEFAULT_NR_DEVICE, sizeof(struct device *));
 	target->max_device = DEFAULT_NR_DEVICE;
@@ -497,7 +573,7 @@ int target_thread_create(int *sfd)
 	target->pfd[POLL_IPC_CTRL].fd = fd[1];
 	target->pfd[POLL_IPC_CTRL].events = POLLIN;
 
-	tthread_event_loop(target);
+	tthread_event_loop(target, pfd);
 
 	return 0;
 }

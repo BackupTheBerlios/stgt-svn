@@ -19,43 +19,6 @@ static int tgtd_pid;
 static struct sock *nls;
 static void *zero_page;
 
-int tgt_uspace_cmd_send(struct tgt_cmd *cmd, gfp_t gfp_mask)
-{
-	struct tgt_protocol *proto = cmd->session->target->proto;
-	struct sk_buff *skb;
-	struct nlmsghdr *nlh;
-	struct tgt_event *ev;
-	pid_t pid = cmd->session->target->tsk->pid;
-	char *pdu;
-	int err, len, proto_pdu_size = proto->uspace_pdu_size;
-
-	len = NLMSG_SPACE(sizeof(*ev) + proto_pdu_size);
-	skb = alloc_skb(NLMSG_SPACE(len), gfp_mask);
-	if (!skb)
-		return -ENOMEM;
-
-	dprintk("%p %d %Zd %d\n", cmd, len, sizeof(*ev), proto_pdu_size);
-	nlh = __nlmsg_put(skb, pid, 0, TGT_KEVENT_CMD_REQ,
-			  len - sizeof(*nlh), 0);
-	ev = NLMSG_DATA(nlh);
-	memset(ev, 0, sizeof(*ev));
-
-	pdu = (char *) ev->data;
-	ev->k.cmd_req.tid = cmd->session->target->tid;
-	ev->k.cmd_req.cid = cmd_tag(cmd);
-	ev->k.cmd_req.typeid = cmd->session->target->typeid;
-	ev->k.cmd_req.data_len = cmd->bufflen;
-
-	proto->uspace_pdu_build(cmd, pdu);
-	err = netlink_unicast(nls, skb, pid, 0);
-	if (err < 0) {
-		eprintk("%d %d\n", pid, err);
-		BUG();
-	}
-	return err;
-}
-EXPORT_SYMBOL_GPL(tgt_uspace_cmd_send);
-
 static int send_event_res(uint16_t type, struct tgt_event *p,
 			  void *data, int dlen, gfp_t flags, uint32_t pid)
 {
@@ -136,7 +99,8 @@ static int event_recv_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
 	case TGT_UEVENT_TARGET_CREATE:
 		target = tgt_target_create(ev->u.c_target.type,
 					   ev->u.c_target.nr_cmds,
-					   ev->u.c_target.pid);
+					   ev->u.c_target.pid,
+					   ev->u.c_target.fd);
 		if (target) {
 			err = target->tid;
 			dprintk("%d %d %d\n", target->tid,

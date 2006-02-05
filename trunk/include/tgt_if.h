@@ -29,6 +29,7 @@ struct tgt_event {
 			char type[32];
 			int nr_cmds;
 			int pid;
+			int fd;
 		} c_target;
 		struct {
 			int tid;

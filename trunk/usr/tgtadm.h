@@ -31,6 +31,7 @@ struct tgtadm_req {
 	int cid;
 	uint64_t lun;
 	int pid;
+	int fd;
 
 	unsigned long addr;
 };

@@ -124,12 +124,14 @@ struct tgt_target {
 
 	struct workqueue_struct *twq;
 	struct task_struct *tsk;
+	struct socket *sock;
 };
 
 #define cdev_to_tgt_target(cdev) \
 	container_of(cdev, struct tgt_target, cdev)
 
-extern struct tgt_target *tgt_target_create(char *target_type, int nr_cmds, int pid);
+extern struct tgt_target *tgt_target_create(char *target_type,
+					    int nr_cmds, int pid, int fd);
 extern int tgt_target_destroy(struct tgt_target *target);
 
 extern int tgt_target_template_register(struct tgt_target_template *tt);
