@@ -1,3 +1,9 @@
+This tree is obsolete. If you are not interested in the history,
+please use:
+
+svn+ssh://svn.berlios.de/svnroot/repos/stgt/branches/use-scsi-ml
+
+
 Introduction
 -------------
 Note that linux target framework software (tgt) is under active
