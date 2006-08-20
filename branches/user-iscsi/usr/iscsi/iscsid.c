@@ -782,6 +782,7 @@ static int iscsi_data_rsp_build(struct iscsi_ctask *ctask)
 	struct iscsi_data_rsp *rsp = (struct iscsi_data_rsp *) &conn->rsp.bhs;
 	struct iscsi_cmd *req = (struct iscsi_cmd *) &ctask->req;
 	int residual, datalen, exp_datalen = ntohl(req->data_length);
+	int max_burst = conn->session_param[ISCSI_PARAM_MAX_XMIT_DLENGTH].val;
 
 	memset(rsp, 0, sizeof(*rsp));
 	rsp->opcode = ISCSI_OP_SCSI_DATA_IN;
@@ -794,22 +795,24 @@ static int iscsi_data_rsp_build(struct iscsi_ctask *ctask)
 	rsp->cmd_status = ctask->result;
 
 	datalen = min(exp_datalen, ctask->len);
-	if (datalen > conn->session_param[ISCSI_PARAM_MAX_XMIT_DLENGTH].val)
-		eprintf("cannot handle %d %d %d %d\n",
-			datalen, exp_datalen, ctask->len,
-			conn->session_param[ISCSI_PARAM_MAX_XMIT_DLENGTH].val);
+	datalen -= ctask->offset;
 
-	rsp->flags = ISCSI_FLAG_CMD_FINAL | ISCSI_FLAG_DATA_STATUS;
-	if (ctask->len < exp_datalen) {
-		rsp->flags |= ISCSI_FLAG_CMD_UNDERFLOW;
-		residual = exp_datalen - ctask->len;
-	} else if (ctask->len > exp_datalen) {
-		rsp->flags |= ISCSI_FLAG_CMD_OVERFLOW;
-		residual = ctask->len - exp_datalen;
+	dprintf("%d %d %d %d\n", datalen, exp_datalen, ctask->len, max_burst);
+
+	if (datalen <= max_burst) {
+		rsp->flags = ISCSI_FLAG_CMD_FINAL | ISCSI_FLAG_DATA_STATUS;
+		if (ctask->len < exp_datalen) {
+			rsp->flags |= ISCSI_FLAG_CMD_UNDERFLOW;
+			residual = exp_datalen - ctask->len;
+		} else if (ctask->len > exp_datalen) {
+			rsp->flags |= ISCSI_FLAG_CMD_OVERFLOW;
+			residual = ctask->len - exp_datalen;
+		} else
+			residual = 0;
+		rsp->residual_count = cpu_to_be32(residual);
 	} else
-		residual = 0;
+		datalen = max_burst;
 
-	rsp->residual_count = cpu_to_be32(residual);
 	if (rsp->flags & ISCSI_FLAG_CMD_FINAL)
 		rsp->statsn = cpu_to_be32(conn->stat_sn++);
 	rsp->exp_cmdsn = cpu_to_be32(conn->exp_cmd_sn);
@@ -818,6 +821,9 @@ static int iscsi_data_rsp_build(struct iscsi_ctask *ctask)
 	conn->rsp.datasize = datalen;
 	hton24(rsp->dlength, datalen);
 	conn->rsp.data = (void *) (unsigned long) ctask->addr;
+	conn->rsp.data += ctask->offset;
+
+	ctask->offset += datalen;
 
 	return 0;
 }
@@ -1021,13 +1027,21 @@ int iscsi_cmd_rx_start(struct connection *conn)
 	return 0;
 }
 
-void iscsi_cmd_tx_done(struct connection *conn)
+void iscsi_cmd_tx_done(struct connection *conn, int *more_rsp)
 {
 	struct iscsi_hdr *hdr = &conn->rsp.bhs;
+
+	*more_rsp = 0;
 
 	switch (hdr->opcode & ISCSI_OPCODE_MASK) {
 	case ISCSI_OP_R2T:
 		break;
+	case ISCSI_OP_SCSI_DATA_IN:
+		if (!(hdr->flags & ISCSI_FLAG_CMD_FINAL)) {
+			iscsi_data_rsp_build(conn->ctask);
+			*more_rsp = 1;
+			return;
+		}
 	default:
 		target_cmd_done(conn->session->tsih, conn->ctask->tag);
 		list_del(&conn->ctask->c_hlist);

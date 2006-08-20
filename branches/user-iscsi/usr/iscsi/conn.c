@@ -105,10 +105,11 @@ void conn_read_pdu(struct connection *conn)
 	conn->rwsize = BHS_SIZE;
 }
 
-void conn_write_pdu(struct connection *conn)
+void conn_write_pdu(struct connection *conn, int clear)
 {
 	conn->tx_iostate = IOSTATE_WRITE_BHS;
-	memset(&conn->rsp, 0, sizeof(conn->rsp));
+	if (clear)
+		memset(&conn->rsp, 0, sizeof(conn->rsp));
 	conn->buffer = (void *)&conn->rsp.bhs;
 	conn->rwsize = BHS_SIZE;
 }

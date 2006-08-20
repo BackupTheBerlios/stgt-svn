@@ -220,7 +220,7 @@ static void iscsi_rx(struct pollfd *pfd, struct connection *conn)
 
 				dprintf("done\n");
 
-				conn_write_pdu(conn);
+				conn_write_pdu(conn, 0);
 				pfd->events = POLLOUT;
 				res = iscsi_cmd_rx_done(conn, &rsp);
 				if (!res && !rsp) {
@@ -228,7 +228,7 @@ static void iscsi_rx(struct pollfd *pfd, struct connection *conn)
 					pfd->events = POLLIN;
 				}
 			} else {
-				conn_write_pdu(conn);
+				conn_write_pdu(conn, 1);
 				pfd->events = POLLOUT;
 				res = cmnd_execute(conn);
 			}
@@ -243,7 +243,7 @@ static void iscsi_rx(struct pollfd *pfd, struct connection *conn)
 
 static void iscsi_tx(struct pollfd *pfd, struct connection *conn)
 {
-	int opt, res;
+	int opt, res, more_rsp;
 
 	switch (conn->tx_iostate) {
 	case IOSTATE_WRITE_BHS:
@@ -311,7 +311,11 @@ static void iscsi_tx(struct pollfd *pfd, struct connection *conn)
 			case STATE_CLOSE:
 				break;
 			case STATE_SCSI:
-				iscsi_cmd_tx_done(conn);
+				iscsi_cmd_tx_done(conn, &more_rsp);
+				if (more_rsp) {
+					conn_write_pdu(conn, 0);
+					goto write_again;
+				}
 			default:
 				conn_read_pdu(conn);
 				pfd->events = POLLIN;
