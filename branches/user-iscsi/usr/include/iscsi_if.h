@@ -21,8 +21,6 @@
 #ifndef ISCSI_IF_H
 #define ISCSI_IF_H
 
-#include <iscsi_proto.h>
-
 #define UEVENT_BASE			10
 #define KEVENT_BASE			100
 #define ISCSI_ERR_BASE			1000
@@ -47,10 +45,19 @@ enum iscsi_uevent_e {
 	ISCSI_UEVENT_TRANSPORT_EP_POLL		= UEVENT_BASE + 13,
 	ISCSI_UEVENT_TRANSPORT_EP_DISCONNECT	= UEVENT_BASE + 14,
 
+	ISCSI_UEVENT_TGT_DSCVR		= UEVENT_BASE + 15,
+
 	/* up events */
 	ISCSI_KEVENT_RECV_PDU		= KEVENT_BASE + 1,
 	ISCSI_KEVENT_CONN_ERROR		= KEVENT_BASE + 2,
 	ISCSI_KEVENT_IF_ERROR		= KEVENT_BASE + 3,
+	ISCSI_KEVENT_DESTROY_SESSION	= KEVENT_BASE + 4,
+};
+
+enum iscsi_tgt_dscvr {
+	ISCSI_TGT_DSCVR_SEND_TARGETS	= 1,
+	ISCSI_TGT_DSCVR_ISNS		= 2,
+	ISCSI_TGT_DSCVR_SLP		= 3,
 };
 
 struct iscsi_uevent {
@@ -116,6 +123,17 @@ struct iscsi_uevent {
 		struct msg_transport_disconnect {
 			uint64_t	ep_handle;
 		} ep_disconnect;
+		struct msg_tgt_dscvr {
+			enum iscsi_tgt_dscvr	type;
+			uint32_t	host_no;
+			/*
+ 			 * enable = 1 to establish a new connection
+			 * with the server. enable = 0 to disconnect
+			 * from the server. Used primarily to switch
+			 * from one iSNS server to another.
+			 */
+			uint32_t	enable;
+		} tgt_dscvr;
 	} u;
 	union {
 		/* messages k -> u */
@@ -127,7 +145,7 @@ struct iscsi_uevent {
 		struct msg_create_conn_ret {
 			uint32_t	sid;
 			uint32_t	cid;
-		} c_conn_ret;			
+		} c_conn_ret;
 		struct msg_recv_req {
 			uint32_t	sid;
 			uint32_t	cid;
@@ -138,6 +156,10 @@ struct iscsi_uevent {
 			uint32_t	cid;
 			uint32_t	error; /* enum iscsi_err */
 		} connerror;
+		struct msg_session_destroyed {
+			uint32_t	host_no;
+			uint32_t	sid;
+		} d_session;
 		struct msg_transport_connect_ret {
 			uint64_t	handle;
 		} ep_connect_ret;
@@ -253,6 +275,7 @@ enum iscsi_param {
  * These flags describes reason of stop_conn() call
  */
 #define STOP_CONN_TERM		0x1
+#define STOP_CONN_SUSPEND	0x2
 #define STOP_CONN_RECOVER	0x3
 
 #define ISCSI_STATS_CUSTOM_MAX		32

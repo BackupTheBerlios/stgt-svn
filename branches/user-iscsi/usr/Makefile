@@ -15,5 +15,4 @@ tgtadm: tgtadm.o
 	$(CC) $^ -o $@
 
 clean:
-	rm -f *.o $(PROGRAMS)
-	$(MAKE) -C iscsi clean
+	rm -f *.o iscsi/*.o $(PROGRAMS)
