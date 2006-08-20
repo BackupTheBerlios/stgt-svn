@@ -37,7 +37,7 @@ extern int tgt_target_destroy(int tid);
 extern int tgt_target_bind(int tid, int host_no, int lid);
 
 typedef int (cmd_end_t)(int host_no, int len, int result, int rw, uint64_t addr,
-			 uint64_t tag);
+			uint64_t tag);
 typedef int (mgmt_end_t)(int host_no, uint64_t mid, int result);
 extern int target_cmd_queue(int host_no, uint8_t *scb, uint8_t *lun,
 			    uint32_t data_len, int attribute, uint64_t tag,

@@ -41,14 +41,11 @@
 
 enum {
 	POLL_LISTEN,
-	POLL_NL = POLL_LISTEN + LISTEN_MAX,
-	POLL_INCOMING,
+	POLL_INCOMING = POLL_LISTEN + LISTEN_MAX,
 	POLL_MAX = POLL_INCOMING + INCOMING_MAX,
 };
 
 static struct connection *incoming[INCOMING_MAX];
-uint64_t thandle;
-int nl_fd;
 
 static void set_non_blocking(int fd)
 {
@@ -127,22 +124,20 @@ static void accept_connection(struct pollfd *pfds, int afd)
 
 	eprintf("%d\n", afd);
 
-	namesize = sizeof(from);
-	if ((fd = accept(afd, (struct sockaddr *) &from, &namesize)) < 0) {
-		if (errno != EINTR && errno != EAGAIN) {
-			eprintf("accept(incoming_socket)\n");
-			exit(1);
-		}
-		return;
-	}
-
 	for (i = 0; i < INCOMING_MAX; i++) {
 		if (!incoming[i])
 			break;
 	}
 	if (i >= INCOMING_MAX) {
-		eprintf("unable to find incoming slot? %d\n", i);
-		goto out;
+		eprintf("unable to find incoming slot %d\n", i);
+		return;
+	}
+
+	namesize = sizeof(from);
+	fd = accept(afd, (struct sockaddr *) &from, &namesize);
+	if (fd < 0) {
+		eprintf("%s\n", strerror(errno));
+		return;
 	}
 
 	conn = conn_alloc();
@@ -166,11 +161,178 @@ out:
 	return;
 }
 
+static void iscsi_rx(struct pollfd *pfd, struct connection *conn)
+{
+	int res;
+
+	switch (conn->rx_iostate) {
+	case IOSTATE_READ_BHS:
+	case IOSTATE_READ_AHS_DATA:
+	read_again:
+		res = read(pfd->fd, conn->buffer, conn->rwsize);
+		if (res <= 0) {
+			if (res == 0 || (errno != EINTR && errno != EAGAIN))
+				conn->state = STATE_CLOSE;
+			else if (errno == EINTR)
+				goto read_again;
+			break;
+		}
+		conn->rwsize -= res;
+		conn->buffer += res;
+		if (conn->rwsize)
+			break;
+
+		switch (conn->rx_iostate) {
+		case IOSTATE_READ_BHS:
+			conn->rx_iostate = IOSTATE_READ_AHS_DATA;
+			conn->req.ahssize = conn->req.bhs.hlength * 4;
+			conn->req.datasize = ntoh24(conn->req.bhs.dlength);
+			conn->rwsize = (conn->req.ahssize + conn->req.datasize + 3) & -4;
+
+			if (conn->req.ahssize) {
+				eprintf("FIXME: we cannot handle ahs\n");
+				conn->state = STATE_CLOSE;
+				break;
+			}
+
+			if (conn->state == STATE_SCSI) {
+				res = iscsi_cmd_rx_start(conn);
+				if (res) {
+					conn->state = STATE_CLOSE;
+					break;
+				}
+			}
+			if (conn->rwsize) {
+				if (conn->state == STATE_SCSI) {
+					dprintf("%d\n", conn->rwsize);
+				} else {
+					conn->buffer = conn->req_buffer;
+					conn->req.ahs = conn->buffer;
+				}
+				conn->req.data =
+					conn->buffer + conn->req.ahssize;
+				goto read_again;
+			}
+
+		case IOSTATE_READ_AHS_DATA:
+			if (conn->state == STATE_SCSI) {
+				int rsp;
+
+				dprintf("done\n");
+
+				conn_write_pdu(conn);
+				pfd->events = POLLOUT;
+				res = iscsi_cmd_rx_done(conn, &rsp);
+				if (!res && !rsp) {
+					conn_read_pdu(conn);
+					pfd->events = POLLIN;
+				}
+			} else {
+				conn_write_pdu(conn);
+				pfd->events = POLLOUT;
+				res = cmnd_execute(conn);
+			}
+
+			if (res)
+				conn->state = STATE_CLOSE;
+			break;
+		break;
+		}
+	}
+}
+
+static void iscsi_tx(struct pollfd *pfd, struct connection *conn)
+{
+	int opt, res;
+
+	switch (conn->tx_iostate) {
+	case IOSTATE_WRITE_BHS:
+	case IOSTATE_WRITE_AHS:
+	case IOSTATE_WRITE_DATA:
+	write_again:
+		if (conn->state == STATE_SCSI)
+			dprintf("%d %d %d\n", conn->rwsize, conn->rsp.ahssize,
+				conn->rsp.datasize);
+		opt = 1;
+		setsockopt(pfd->fd, SOL_TCP, TCP_CORK, &opt, sizeof(opt));
+		res = write(pfd->fd, conn->buffer, conn->rwsize);
+		if (res < 0) {
+			if (errno != EINTR && errno != EAGAIN)
+				conn->state = STATE_CLOSE;
+			else if (errno == EINTR)
+				goto write_again;
+			break;
+		}
+
+		conn->rwsize -= res;
+		conn->buffer += res;
+		if (conn->rwsize)
+			goto write_again;
+
+		switch (conn->tx_iostate) {
+		case IOSTATE_WRITE_BHS:
+			if (conn->rsp.ahssize) {
+				conn->tx_iostate = IOSTATE_WRITE_AHS;
+				conn->buffer = conn->rsp.ahs;
+				conn->rwsize = conn->rsp.ahssize;
+				goto write_again;
+			}
+		case IOSTATE_WRITE_AHS:
+			if (conn->rsp.datasize) {
+				int pad;
+
+				conn->tx_iostate = IOSTATE_WRITE_DATA;
+				conn->buffer = conn->rsp.data;
+				conn->rwsize = conn->rsp.datasize;
+				pad = conn->rwsize & (PAD_WORD_LEN - 1);
+				if (pad) {
+					for (pad = PAD_WORD_LEN - pad; pad; pad--)
+						*((uint8_t *)conn->buffer + conn->rwsize++) = 0;
+				}
+				goto write_again;
+			}
+		case IOSTATE_WRITE_DATA:
+			opt = 0;
+			setsockopt(pfd->fd, SOL_TCP, TCP_CORK, &opt, sizeof(opt));
+			cmnd_finish(conn);
+
+			switch (conn->state) {
+			case STATE_KERNEL:
+				res = conn_take_fd(conn, pfd->fd);
+				if (res)
+					conn->state = STATE_CLOSE;
+				else {
+					conn->state = STATE_SCSI;
+					conn_read_pdu(conn);
+					pfd->events = POLLIN;
+				}
+				break;
+			case STATE_EXIT:
+			case STATE_CLOSE:
+				break;
+			case STATE_SCSI:
+				iscsi_cmd_tx_done(conn);
+			default:
+				conn_read_pdu(conn);
+				pfd->events = POLLIN;
+				break;
+			}
+			break;
+		}
+
+		break;
+	default:
+		eprintf("illegal iostate %d\n", conn->tx_iostate);
+		conn->state = STATE_CLOSE;
+	}
+}
+
 void iscsi_event_handle(struct pollfd *pfds)
 {
+	struct session *session;
 	struct connection *conn;
 	struct pollfd *pfd;
-	int i, res, opt;
+	int i;
 
 	for (i = 0; i < LISTEN_MAX; i++) {
 		if (pfds[POLL_LISTEN + i].revents)
@@ -183,128 +345,22 @@ void iscsi_event_handle(struct pollfd *pfds)
 		if (!conn || !pfd->revents)
 			continue;
 
+		if (pfd->revents & POLLIN)
+			iscsi_rx(pfd, conn);
+		if (pfd->revents & POLLOUT)
+			iscsi_tx(pfd, conn);
 		pfd->revents = 0;
-
-		switch (conn->iostate) {
-		case IOSTATE_READ_BHS:
-		case IOSTATE_READ_AHS_DATA:
-		read_again:
-			res = read(pfd->fd, conn->buffer, conn->rwsize);
-			if (res <= 0) {
-				if (res == 0 || (errno != EINTR && errno != EAGAIN))
-					conn->state = STATE_CLOSE;
-				else if (errno == EINTR)
-					goto read_again;
-				break;
-			}
-			conn->rwsize -= res;
-			conn->buffer += res;
-			if (conn->rwsize)
-				break;
-
-			switch (conn->iostate) {
-			case IOSTATE_READ_BHS:
-				conn->iostate = IOSTATE_READ_AHS_DATA;
-				conn->req.ahssize =
-					conn->req.bhs.hlength * 4;
-				conn->req.datasize =
-					ntoh24(conn->req.bhs.dlength);
-				conn->rwsize = (conn->req.ahssize + conn->req.datasize + 3) & -4;
-				if (conn->rwsize) {
-					if (!conn->req_buffer)
-						conn->req_buffer = malloc(INCOMING_BUFSIZE);
-					conn->buffer = conn->req_buffer;
-					conn->req.ahs = conn->buffer;
-					conn->req.data = conn->buffer + conn->req.ahssize;
-					goto read_again;
-				}
-
-			case IOSTATE_READ_AHS_DATA:
-				conn_write_pdu(conn);
-				pfd->events = POLLOUT;
-
-				if (!cmnd_execute(conn))
-					conn->state = STATE_CLOSE;
-				break;
-			}
-			break;
-
-		case IOSTATE_WRITE_BHS:
-		case IOSTATE_WRITE_AHS:
-		case IOSTATE_WRITE_DATA:
-		write_again:
-			opt = 1;
-			setsockopt(pfd->fd, SOL_TCP, TCP_CORK, &opt, sizeof(opt));
-			res = write(pfd->fd, conn->buffer, conn->rwsize);
-			if (res < 0) {
-				if (errno != EINTR && errno != EAGAIN)
-					conn->state = STATE_CLOSE;
-				else if (errno == EINTR)
-					goto write_again;
-				break;
-			}
-
-			conn->rwsize -= res;
-			conn->buffer += res;
-			if (conn->rwsize)
-				goto write_again;
-
-			switch (conn->iostate) {
-			case IOSTATE_WRITE_BHS:
-				if (conn->rsp.ahssize) {
-					conn->iostate = IOSTATE_WRITE_AHS;
-					conn->buffer = conn->rsp.ahs;
-					conn->rwsize = conn->rsp.ahssize;
-					goto write_again;
-				}
-			case IOSTATE_WRITE_AHS:
-				if (conn->rsp.datasize) {
-					int o;
-
-					conn->iostate = IOSTATE_WRITE_DATA;
-					conn->buffer = conn->rsp.data;
-					conn->rwsize = conn->rsp.datasize;
-					o = conn->rwsize & 3;
-					if (o) {
-						for (o = 4 - o; o; o--)
-							*((uint8_t *)conn->buffer + conn->rwsize++) = 0;
-					}
-					goto write_again;
-				}
-			case IOSTATE_WRITE_DATA:
-				opt = 0;
-				setsockopt(pfd->fd, SOL_TCP, TCP_CORK, &opt, sizeof(opt));
-				cmnd_finish(conn);
-
-				switch (conn->state) {
-				case STATE_KERNEL:
-					conn_take_fd(conn, pfd->fd);
-					conn->state = STATE_CLOSE;
-					break;
-				case STATE_EXIT:
-				case STATE_CLOSE:
-					break;
-				default:
-					conn_read_pdu(conn);
-					pfd->events = POLLIN;
-					break;
-				}
-				break;
-			}
-
-			break;
-		default:
-			eprintf("illegal iostate %d for port %d!\n", conn->iostate, i);
-			exit(1);
-		}
 
 		if (conn->state == STATE_CLOSE) {
 			dprintf("connection closed\n");
+			session = conn->session;
 			conn_free_pdu(conn);
 			conn_free(conn);
-/* 			close(pfd->fd); */
+			close(pfd->fd);
 			pfd->fd = -1;
 			incoming[i] = NULL;
+			if (session)
+				session_destroy(session);
 		}
 	}
 }
@@ -312,9 +368,6 @@ void iscsi_event_handle(struct pollfd *pfds)
 int iscsi_poll_init(struct pollfd *pfd)
 {
 	int i;
-
-	pfd[POLL_NL].fd = nl_fd;
-	pfd[POLL_NL].events = POLLIN;
 
 	listen_socket_create(pfd + POLL_LISTEN);
 
@@ -329,7 +382,6 @@ int iscsi_poll_init(struct pollfd *pfd)
 
 int iscsi_init(int *npfd)
 {
-	iscsi_nl_init();
 	*npfd = POLL_MAX;
 
 	return 0;

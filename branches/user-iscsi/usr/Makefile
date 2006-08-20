@@ -1,17 +1,10 @@
-CFLAGS += -O2 -fno-inline -Wall -Wstrict-prototypes -fPIC -I$(KERNELSRC)/include -I../istgt/include -I../include -I. -D_LARGEFILE64_SOURCE
+CFLAGS += -O2 -fno-inline -Wall -Wstrict-prototypes -D_LARGEFILE64_SOURCE -I./include -I.
 PROGRAMS = tgtd tgtadm
-TGTD_OBJS = tgtd.o tgtif.o mgmt.o target.o scsi.o log.o driver.o util.o
+TGTD_OBJS = tgtd.o mgmt.o target.o scsi.o log.o driver.o util.o
 
-ifneq ($(IBMVIO),)
-CFLAGS += -DIBMVIO
-TGTD_OBJS += $(addprefix ibmvio/, ibmvio.o)
-endif
-
-ifneq ($(ISCSI),)
 CFLAGS += -DISCSI
-TGTD_OBJS += $(addprefix iscsi/, istgt.o conn.o param.o session.o iscsid.o target.o chap.o netlink.o)
+TGTD_OBJS += $(addprefix iscsi/, istgt.o conn.o param.o session.o iscsid.o target.o chap.o)
 LIBS = -lcrypto
-endif
 
 all: $(PROGRAMS)
 

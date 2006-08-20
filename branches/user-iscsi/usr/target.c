@@ -32,7 +32,7 @@
 #include <sys/stat.h>
 
 #include <linux/fs.h>
-#include <scsi/scsi.h>
+#include "scsi.h"
 
 #include "list.h"
 #include "util.h"

@@ -33,6 +33,14 @@
 #define max_t(type,x,y) \
 	({ type __x = (x); type __y = (y); __x > __y ? __x: __y; })
 
+static inline void *zalloc(size_t size)
+{
+	void *p = malloc(size);
+	if (p)
+		memset(p, 0, size);
+	return p;
+}
+
 extern int chrdev_open(char *modname, char *devpath, uint8_t minor, int *fd);
 
 #endif

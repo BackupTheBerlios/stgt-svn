@@ -39,7 +39,7 @@
 #include "driver.h"
 
 enum {
-	POLL_KI, /* kernel interface */
+/* 	POLL_KI, /\* kernel interface *\/ */
 	POLL_IPC, /* unix domain socket for tgtdadm */
 	POLL_END,
 };
@@ -138,10 +138,10 @@ retry:
 		goto retry;
 	}
 
-	if (pfd[POLL_KI].revents) {
-		kspace_event_handle();
-		nevent--;
-	}
+/* 	if (pfd[POLL_KI].revents) { */
+/* 		kspace_event_handle(); */
+/* 		nevent--; */
+/* 	} */
 
 	if (pfd[POLL_IPC].revents) {
 		dprintf("ipc event\n");
@@ -171,8 +171,8 @@ static struct pollfd *pfd_init(int npfd, int nl_fd, int ud_fd)
 	if (!pfd)
 		return NULL;
 
-	pfd[POLL_KI].fd = nl_fd;
-	pfd[POLL_KI].events = POLLIN;
+/* 	pfd[POLL_KI].fd = nl_fd; */
+/* 	pfd[POLL_KI].events = POLLIN; */
 	pfd[POLL_IPC].fd = ud_fd;
 	pfd[POLL_IPC].events = POLLIN;
 
@@ -276,14 +276,15 @@ int main(int argc, char **argv)
 	if (err)
 		exit(1);
 
-	err = kreq_init(&ki_fd);
-	if (err)
-		exit(1);
+/* 	err = kreq_init(&ki_fd); */
+/* 	if (err) */
+/* 		exit(1); */
 
 	err = ipc_init(&ipc_fd);
 	if (err)
 		exit(1);
 
+	ki_fd = 0;
 	pfd = pfd_init(nr_pfd, ki_fd, ipc_fd);
 
 	event_loop(pfd, nr_pfd, timeout);

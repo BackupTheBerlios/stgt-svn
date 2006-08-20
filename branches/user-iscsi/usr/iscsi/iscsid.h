@@ -11,12 +11,13 @@
 #include <linux/types.h>
 
 #include "types.h"
-#include "iscsi_if.h"
-#include "list.h"
 #include "param.h"
-#include "log.h"
+#include "../list.h"
+#include "../log.h"
+#include "../util.h"
 
-#include <scsi/iscsi_proto.h>
+#include <iscsi_proto.h>
+#include <iscsi_if.h>
 
 #define ISCSI_NAME_LEN 255
 #define ISTGT_NAMESPACE "ISTGT_ABSTRACT_NAMESPACE"
@@ -25,9 +26,6 @@
 #define DIGEST_NONE		(1 << 0)
 #define DIGEST_CRC32C           (1 << 1)
 
-extern uint64_t thandle;
-extern int nl_fd;
-
 #define sid64(isid, tsih)					\
 ({								\
 	(uint64_t) isid[0] <<  0 | (uint64_t) isid[1] <<  8 |	\
@@ -35,6 +33,8 @@ extern int nl_fd;
 	(uint64_t) isid[4] << 32 | (uint64_t) isid[5] << 40 |	\
 	(uint64_t) tsih << 48;					\
 })
+
+struct connection;
 
 struct PDU {
 	struct iscsi_hdr bhs;
@@ -52,24 +52,47 @@ struct session {
 	struct list_head slist;
 	struct list_head hlist;
 
+
 	char *initiator;
 	struct target *target;
 	uint8_t isid[6];
 	uint16_t tsih;
 
-	/* workaroud */
-	uint32_t ksid;
-	uint32_t hostno;
-
 	struct list_head conn_list;
 	int conn_cnt;
+
+	struct list_head cmd_list;
+};
+
+struct iscsi_ctask {
+	struct iscsi_hdr req;
+	struct iscsi_hdr rsp;
+
+	uint64_t tag;
+	struct connection *conn;
+
+	struct list_head c_hlist;
+
+	uint64_t addr;
+	int result;
+	int len;
+	int rw;
+
+	int offset;
+	int data_sn;
+
+	int r2t_count;
+	int unsol_count;
+	int exp_r2tsn;
 };
 
 struct connection {
 	int state;
-	int iostate;
+	int tx_iostate;
+	int rx_iostate;
 	int fd;
 
+	struct list_head send;
 	struct list_head clist;
 	struct session *session;
 
@@ -83,9 +106,6 @@ struct connection {
 	uint16_t pad;
 	int session_type;
 	int auth_method;
-
-	/* workaroud */
-	uint32_t kcid;
 
 	uint32_t stat_sn;
 	uint32_t exp_stat_sn;
@@ -110,6 +130,8 @@ struct connection {
 			unsigned char *challenge;
 		} chap;
 	} auth;
+
+	struct iscsi_ctask *ctask;
 };
 
 #define IOSTATE_FREE		0
@@ -131,6 +153,7 @@ struct connection {
 #define STATE_KERNEL		9
 #define STATE_CLOSE		10
 #define STATE_EXIT		11
+#define STATE_SCSI		12
 
 #define AUTH_STATE_START	0
 #define AUTH_STATE_CHALLENGE	1
@@ -170,7 +193,7 @@ extern int cmnd_exec_auth_chap(struct connection *conn);
 extern struct connection *conn_alloc(void);
 extern void conn_free(struct connection *conn);
 extern struct connection * conn_find(struct session *session, uint32_t cid);
-extern void conn_take_fd(struct connection *conn, int fd);
+extern int conn_take_fd(struct connection *conn, int fd);
 extern void conn_read_pdu(struct connection *conn);
 extern void conn_write_pdu(struct connection *conn);
 extern void conn_free_pdu(struct connection *conn);
@@ -183,22 +206,21 @@ extern int cmnd_execute(struct connection *conn);
 extern void cmnd_finish(struct connection *conn);
 extern char *text_key_find(struct connection *conn, char *searchKey);
 extern void text_key_add(struct connection *conn, char *key, char *value);
+extern int iscsi_cmd_rx_start(struct connection *conn);
+extern int iscsi_cmd_rx_done(struct connection *conn, int *is_rsp);
+extern void iscsi_cmd_tx_done(struct connection *conn);
 
 /* session.c */
 extern struct session *session_find_name(int tid, const char *iname, uint8_t *isid);
-extern struct session *session_find_id(int tid, uint64_t sid);
-extern struct session *session_find_hostno(int hostno);
-extern void session_create(struct connection *conn);
-extern void session_remove(struct session *session);
+extern int session_create(struct connection *conn);
+extern void session_destroy(struct session *session);
+extern struct session *session_lookup(uint16_t tsih);
 
 /* target.c */
 extern int target_find_by_name(const char *name, int *tid);
 struct target * target_find_by_id(int tid);
 extern void target_list_build(struct connection *, char *, char *);
 extern int target_bind(int tid, int hostno);
-
-extern void ipc_event(void);
-extern int ipc_init(void);
 
 /* netlink.c */
 struct iscsi_kernel_interface {
