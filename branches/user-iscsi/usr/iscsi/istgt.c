@@ -218,9 +218,7 @@ static void iscsi_rx(struct pollfd *pfd, struct connection *conn)
 			if (conn->state == STATE_SCSI) {
 				int rsp;
 
-				dprintf("done\n");
-
-				conn_write_pdu(conn, 0);
+				conn_write_pdu(conn, 1);
 				pfd->events = POLLOUT;
 				res = iscsi_cmd_rx_done(conn, &rsp);
 				if (!res && !rsp) {
