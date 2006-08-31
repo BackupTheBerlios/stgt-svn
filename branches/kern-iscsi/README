@@ -1,0 +1,83 @@
+Introduction
+-------------
+Note that linux target framework (tgt) is under active
+development. Don't play with important data.
+
+Currently, tgt supports only one low level driver, IBM VIO server
+(ibmvstgt).
+
+
+Starting
+-------------
+The software consists of kernel modules and user-space tools (daemon,
+management tool, dynamic libraries).
+
+First, get kernel sources from James's scsi-rc-fixes-2.6 git tree:
+
+master.kernel.org:/pub/scm/linux/kernel/git/jejb/scsi-target-2.6.git
+
+Second, if you use ibmvstgt, apply scsi-target-2.6-tree.diff in the
+patchset directory. If not, you can skip this.
+
+Third, rebuild the kernel, and reboot with the new kernel.
+
+The compilation of the kernel modules require the path to above kernel
+source:
+
+host:~/use-scsi-ml$ make KERNELSRC=<kernel-src>
+
+Make sure that everything is built successfully. Now you can load the
+kernel modules by typing the followings.
+
+host:~/use-scsi-ml$ su
+host:~/use-scsi-ml# ./initd start
+
+See /var/log/kern.log (your Linux distributions may use the different
+log file name) to make sure that the kernel modules are loaded
+properly. You should see messages like the followings:
+
+Feb 27 19:37:52 lilac kernel: IBM eServer i/pSeries Virtual SCSI Target Driver
+Feb 27 19:37:52 lilac kernel: vio_register_driver: driver ibmvscsi registering
+Feb 27 19:37:52 lilac kernel: scsi1 : ibmvstgt
+
+You need the scsi host number (it is 1 in this example) in the next
+stage (configuration).
+
+
+Configuration
+-------------
+
+Everyting is configured via the tgtadm management tool. Currenlty, tgt
+does not support persistent configurations. You can use a makeshift
+script, 'ibmv' to do the necessary job.
+
+Note that the ibmv script exports /dev/sdb1 to initiators as LUN 0 by
+defaults. You MUST change the device path if your /dev/sdb1 stores
+important data or your box does not have /dev/sdb1.
+
+host:~/use-scsi-ml# ./ibmv 1
+
+You need to specify the scsi host number as the first argument.
+
+Please see /var/log/daemon.log (your Linux distributions may use the
+different log file name again) to make sure that everything is
+fine. You should see something like the followings:
+
+Feb 27 22:36:40 lilac tgtd: dl_init(71) istgt library is not loaded.
+Feb 27 22:36:40 lilac tgtd: dl_init(71) ibmvstgt library is not loaded.
+Feb 27 22:37:08 lilac tgtd: tgt_target_create(572) Succeed to create a new target 1
+Feb 27 22:37:08 lilac tgtd: tgt_target_bind(517) Succeed to bind the target 1 to the scsi host 1
+Feb 27 22:37:08 lilac tgtd: tgt_device_create(238) Succeed to add a logical unit 0 to the target 1
+
+
+Now you are ready. Boot up VIO clients.
+
+Note that the tgt kernel modules enable the debug option by
+defaults. We are not ready for improving performance.
+
+
+Stopping
+-------------
+Simply execute:
+
+host:~/use-scsi-ml# ./initd stop
